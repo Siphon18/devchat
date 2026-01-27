@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 export default function LoginPage() {
     const { login } = useAuth();
+    const navigate = useNavigate();
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
@@ -48,6 +50,7 @@ export default function LoginPage() {
                 alert("Account created! Please login.");
             } else {
                 login(data.access_token);
+                navigate("/");
             }
 
         } catch (err) {
