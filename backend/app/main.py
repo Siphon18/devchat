@@ -1,17 +1,83 @@
 print("MAIN.PY LOADED")
 import os
-from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.database import Base, engine, SessionLocal
-from app import models, schemas
+from app import models, schemas, auth
 from app.executor import execute_python
 from app.websocket import manager
 from fastapi.middleware.cors import CORSMiddleware
 from app.models import CodeExecution
-
+from jose import JWTError, jwt
 
 
 app = FastAPI()
+
+# AUTH CONFIG
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = schemas.TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+        
+    user = db.query(models.User).filter(models.User.username == token_data.username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+
+# -------- AUTH ROUTES --------
+
+@app.post("/register", response_model=schemas.UserResponse)
+def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    hashed_password = auth.get_password_hash(user.password)
+    new_user = models.User(username=user.username, hashed_password=hashed_password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.post("/token", response_model=schemas.Token)
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
+    if not user or not auth.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = auth.create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me", response_model=schemas.UserResponse)
+def read_users_me(current_user: models.User = Depends(get_current_user)):
+    return current_user
+
+# -----------------------------
 
 # Allow frontend URLs from environment variable for deployment
 frontend_url = os.getenv("FRONTEND_URL", "").strip()
@@ -34,12 +100,6 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 @app.get("/")
@@ -50,7 +110,7 @@ def root():
 # -------- PROJECTS --------
 
 @app.post("/projects")
-def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)):
+def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db_project = models.Project(
         name=project.name,
         description=project.description,
@@ -63,14 +123,14 @@ def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)
 
 
 @app.get("/projects")
-def list_projects(db: Session = Depends(get_db)):
+def list_projects(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.Project).all()
 
 
 # -------- ROOMS --------
 
 @app.post("/rooms")
-def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db)):
+def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db_room = models.Room(
         name=room.name,
         project_id=room.project_id
@@ -82,17 +142,17 @@ def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/rooms/{project_id}")
-def list_rooms(project_id: int, db: Session = Depends(get_db)):
+def list_rooms(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.Room).filter(models.Room.project_id == project_id).all()
 
 @app.delete("/projects/{project_id}")
-def delete_project(project_id: int, db: Session = Depends(get_db)):
+def delete_project(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db.query(models.Project).filter(models.Project.id == project_id).delete()
     db.commit()
     return {"status": "deleted", "id": project_id}
 
 @app.delete("/rooms/{room_id}")
-def delete_room(room_id: int, db: Session = Depends(get_db)):
+def delete_room(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db.query(models.Room).filter(models.Room.id == room_id).delete()
     db.commit()
     return {"status": "deleted", "id": room_id}
@@ -100,7 +160,7 @@ def delete_room(room_id: int, db: Session = Depends(get_db)):
 # -------- MESSAGES --------
 
 @app.post("/messages")
-def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)):
+def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db_message = models.Message(
         room_id=message.room_id,
         sender=message.sender,
@@ -139,7 +199,7 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
     }
 
 @app.get("/messages/{room_id}")
-def get_messages(room_id: int, db: Session = Depends(get_db)):
+def get_messages(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     messages = db.query(models.Message)\
         .filter(models.Message.room_id == room_id)\
         .order_by(models.Message.timestamp.asc())\
