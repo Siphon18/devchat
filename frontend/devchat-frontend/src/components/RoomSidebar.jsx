@@ -25,8 +25,16 @@ export default function RoomSidebar({ isOpen, onRoomSelect, username, onLogout }
     }, []);
 
     const loadProjects = async () => {
-        const data = await getProjects();
-        setProjects(data);
+        try {
+            const data = await getProjects();
+            if (Array.isArray(data)) {
+                setProjects(data);
+            } else {
+                console.error("Projects not loaded correctly:", data);
+            }
+        } catch (e) {
+            console.error(e);
+        }
     };
 
     const toggleProject = async (projectId) => {
@@ -38,8 +46,14 @@ export default function RoomSidebar({ isOpen, onRoomSelect, username, onLogout }
         setExpandedProject(projectId);
         // Load rooms for this project if not already loaded
         if (!rooms[projectId]) {
-            const projectRooms = await getRooms(projectId);
-            setRooms(prev => ({ ...prev, [projectId]: projectRooms }));
+            try {
+                const projectRooms = await getRooms(projectId);
+                if (Array.isArray(projectRooms)) {
+                    setRooms(prev => ({ ...prev, [projectId]: projectRooms }));
+                }
+            } catch (e) {
+                console.error(e);
+            }
         }
         setIsCreatingRoom(false);
     };
@@ -57,8 +71,12 @@ export default function RoomSidebar({ isOpen, onRoomSelect, username, onLogout }
         await createRoom({ name: newRoomName, project_id: projectId });
         setNewRoomName("");
         setIsCreatingRoom(false);
-        const updated = await getRooms(projectId);
-        setRooms(prev => ({ ...prev, [projectId]: updated }));
+        try {
+            const updated = await getRooms(projectId);
+            if (Array.isArray(updated)) {
+                setRooms(prev => ({ ...prev, [projectId]: updated }));
+            }
+        } catch (e) { console.error(e); }
     };
 
     const handleContextMenu = (e, type, item) => {
