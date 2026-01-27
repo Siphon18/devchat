@@ -3,14 +3,6 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
-    depends_on:
-      - executor
-
-  executor:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.executor
-    container_name: devchat-executor
 
   frontend:
     build:
