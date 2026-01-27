@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - executor
+
+  executor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.executor
+    container_name: devchat-executor
+
+  frontend:
+    build:
+      context: ./frontend/devchat-frontend
+      args:
+        - VITE_API_URL=http://localhost:8000
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

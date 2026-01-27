@@ -1,0 +1,7 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY app/runner.py /app/runner.py
+
+CMD ["python", "runner.py"]

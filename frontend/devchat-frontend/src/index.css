@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+@theme {
+  --color-discord-bg: #313338;
+  --color-discord-sidebar: #2b2d31;
+  --color-discord-server-rail: #1e1f22;
+  --color-discord-blurple: #5865F2;
+  --color-discord-green: #23a559;
+  --color-discord-red: #da373c;
+  --color-discord-text-normal: #dbdee1;
+  --color-discord-text-muted: #949ba4;
+  --color-discord-hover: #3f4147;
+  --color-discord-active: #404249;
+  --color-discord-divider: #1e1f22;
+
+  --animate-fade-in-up: fadeInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-fade-in: fadeIn 0.15s ease-out;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes fadeInUp {
+    0% {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-discord-bg text-discord-text-normal antialiased;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-discord-server-rail;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-discord-sidebar rounded-full hover:bg-discord-hover transition-colors;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 20px;
+  background: #141824;
+  border-bottom: 1px solid #1f2430;
+}
+
+.clear-btn {
+  background: #ff4d4d;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.clear-btn:hover {
+  background: #ff1a1a;
+}
+
+.exec {
+  margin-top: 6px;
+  padding: 10px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.exec.running {
+  background: #2a2a1a;
+  color: #ffaa00;
+}
+
+.exec.success {
+  background: #0f1f0f;
+  color: #39ff14;
+}
+
+.exec.error {
+  background: #2a0f0f;
+  color: #ff4d4d;
+}
