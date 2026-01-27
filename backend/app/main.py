@@ -147,7 +147,20 @@ def list_rooms(project_id: int, db: Session = Depends(get_db), current_user: mod
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    db.query(models.Project).filter(models.Project.id == project_id).delete()
+    # 1. Get all rooms for this project
+    rooms = db.query(models.Room).filter(models.Room.project_id == project_id).all()
+    room_ids = [room.id for room in rooms]
+
+    # 2. Delete all messages in these rooms
+    if room_ids:
+        db.query(models.Message).filter(models.Message.room_id.in_(room_ids)).delete(synchronize_session=False)
+
+    # 3. Delete the rooms
+    db.query(models.Room).filter(models.Room.project_id == project_id).delete(synchronize_session=False)
+
+    # 4. Delete the project
+    db.query(models.Project).filter(models.Project.id == project_id).delete(synchronize_session=False)
+    
     db.commit()
     return {"status": "deleted", "id": project_id}
 
