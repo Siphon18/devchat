@@ -20,7 +20,7 @@ export default function MessageList({ messages, username }) {
         return (
           <div
             key={i}
-            className={`flex gap-4 px-2 py-0.5 hover:bg-discord-hover/30 -mx-4 px-4 group animate-fade-in-up`}
+            className={`flex gap-4 px-2 py-0.5 hover:bg-discord-hover/30 -mx-4 px-4 group animate-fade-in-up ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
             style={{ animationDelay: `${i * 0.05}s` }}
           >
             {/* Avatar */}
@@ -34,35 +34,40 @@ export default function MessageList({ messages, username }) {
             </div>
 
             {/* Content */}
-            <div className="flex-1 min-w-0">
+            <div className={`flex-1 min-w-0 flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
               {showHeader && (
-                <div className="flex items-center gap-2">
-                  <span className={`font-medium cursor-pointer hover:underline ${isUser ? 'text-white' : 'text-discord-green'}`}>
+                <div className={`flex items-center gap-2 mb-1 ${isUser ? 'flex-row-reverse' : ''}`}>
+                  <span className={`font-medium cursor-pointer hover:underline ${isUser ? 'text-discord-blurple' : 'text-discord-green'}`}>
                     {msg.message.sender}
                   </span>
                   <span className="text-xs text-discord-text-muted">{formatTime(msg.message.timestamp)}</span>
                 </div>
               )}
 
-              <div className={`text-discord-text-normal whitespace-pre-wrap break-words leading-[1.375rem] ${!showHeader ? 'mt-0' : ''} w-fit max-w-full bg-discord-server-rail/60 px-3 py-2 rounded-lg mt-1`}>
+              <div className={`
+                whitespace-pre-wrap break-words leading-[1.375rem] w-fit max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm border
+                ${isUser
+                  ? 'bg-discord-blurple/10 border-discord-blurple/20 text-discord-text-normal rounded-tr-none'
+                  : 'bg-discord-server-rail border-transparent text-discord-text-normal rounded-tl-none'}
+              `}>
                 {msg.message.content}
               </div>
 
               {/* Execution state handling */}
               {msg.message.type === "code" && (
-                <div className="mt-2">
+                <div className={`mt-2 w-full max-w-[85%] ${isUser ? 'text-right' : 'text-left'}`}>
                   {msg.execution?.status === "running" && (
                     <div className="exec running">⏳ Running...</div>
                   )}
 
                   {msg.execution?.status === "success" && (
-                    <div className="exec success">
+                    <div className="exec success text-left">
                       <pre className="whitespace-pre-wrap break-words">{msg.execution.stdout}</pre>
                     </div>
                   )}
 
                   {msg.execution?.status === "error" && (
-                    <div className="exec error">
+                    <div className="exec error text-left">
                       <pre className="whitespace-pre-wrap break-words">{msg.execution.stderr}</pre>
                     </div>
                   )}
