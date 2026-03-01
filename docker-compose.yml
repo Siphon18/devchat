@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-devchat}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}
       POSTGRES_DB: ${POSTGRES_DB:-devchat}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -31,7 +31,7 @@ services:
     volumes:
       - ./backend/:/app/
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-devchat}:${POSTGRES_PASSWORD:-devchat}@postgres:5432/${POSTGRES_DB:-devchat}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-devchat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}@postgres:5432/${POSTGRES_DB:-devchat}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your .env}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
