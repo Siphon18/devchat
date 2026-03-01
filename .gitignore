@@ -18,6 +18,14 @@ yarn-error.log*
 .docker/
 docker-compose.override.yml
 
+# Project runtime artifacts
+backend/*.db
+backend/uploads/
+frontend/devchat-frontend/build_output.txt
+frontend/devchat-frontend/eslint_output.txt
+frontend/devchat-frontend/eslint.json
+frontend/devchat-frontend/err.json
+
 # IDE
 .vscode/
 .idea/

@@ -1,17 +1,65 @@
 services:
+
+  # ─────────────────────────────────────────────
+  # PostgreSQL — primary database
+  # ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-devchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devchat}
+      POSTGRES_DB: ${POSTGRES_DB:-devchat}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432" # expose for local dev; remove in prod
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devchat}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────
+  # Backend — FastAPI
+  # ─────────────────────────────────────────────
   backend:
     build: ./backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/devchat.db:/app/devchat.db
+      - ./backend/:/app/
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-devchat}:${POSTGRES_PASSWORD:-devchat}@postgres:5432/${POSTGRES_DB:-devchat}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your .env}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      ENABLE_DOCS: ${ENABLE_DOCS:-false}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      RATE_LIMIT_DEFAULT_MAX: ${RATE_LIMIT_DEFAULT_MAX:-240}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-15}
+      RATE_LIMIT_UPLOAD_MAX: ${RATE_LIMIT_UPLOAD_MAX:-30}
+      RATE_LIMIT_MESSAGE_MAX: ${RATE_LIMIT_MESSAGE_MAX:-120}
+      MAX_USER_STORAGE_BYTES: ${MAX_USER_STORAGE_BYTES:-262144000}
+      MAX_ATTACHMENTS_PER_MESSAGE: ${MAX_ATTACHMENTS_PER_MESSAGE:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
+  # ─────────────────────────────────────────────
+  # Frontend — React (Vite / Nginx)
+  # ─────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend/devchat-frontend
       args:
         - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
       - backend
+
+volumes:
+  postgres_data:

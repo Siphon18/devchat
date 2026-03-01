@@ -1,66 +1,115 @@
-import { useState, useEffect } from "react";
+import { useState, useRef } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import ChatWindow from "./components/ChatWindow";
 import RoomSidebar from "./components/RoomSidebar";
 import LoginPage from "./pages/LoginPage";
+import LandingPage from "./pages/LandingPage";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { getAvatarUrl } from "./utils/avatar";
 
 function ProtectedRoute({ children }) {
   const { token, loading } = useAuth();
-  if (loading) return <div className="flex h-screen w-screen items-center justify-center bg-discord-bg text-white">Loading...</div>;
+  if (loading) return <PageLoader />;
   if (!token) return <Navigate to="/login" />;
   return children;
 }
 
 function ChatLayout() {
   const [selectedRoom, setSelectedRoom] = useState(null);
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const sidebarRef = useRef(null);
 
-  if (!user) return <div className="flex h-screen w-screen items-center justify-center bg-discord-bg text-white">Loading user data...</div>;
+  if (!user) return <PageLoader />;
+
+  const handleNewMessage = (roomId, projectId) => {
+    // Only increment badge if the message is from a room NOT currently being viewed
+    // ChatWindow already filters out own messages before calling this
+    if (sidebarRef.current?.incrementUnread) {
+      sidebarRef.current.incrementUnread(roomId, projectId);
+    }
+  };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-discord-bg font-sans">
+    <div className="flex h-screen w-screen overflow-hidden bg-dc-bg font-sans">
       <RoomSidebar
+        ref={sidebarRef}
         isOpen={sidebarOpen}
         onRoomSelect={setSelectedRoom}
         username={user.username}
-        onLogout={logout}
+        gender={user.gender}
+        activeRoomId={selectedRoom?.id}
       />
 
-      <main className="flex-1 flex flex-col min-w-0 bg-discord-bg relative transition-all duration-300">
+      <main className="flex-1 flex flex-col min-w-0 bg-dc-bg relative transition-all duration-300">
         {selectedRoom ? (
           <ChatWindow
             room={selectedRoom}
-            username={user.username}
+            user={user}
             sidebarOpen={sidebarOpen}
             toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            onNewMessage={handleNewMessage}
           />
         ) : (
-          <div className="flex-1 flex flex-col relative">
-            <div className="absolute top-3 left-4 z-10">
-              <button
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="text-discord-text-muted hover:text-discord-text-normal transition-colors p-1 rounded hover:bg-discord-hover/50"
-                title={sidebarOpen ? "Close Sidebar" : "Open Sidebar"}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                  <line x1="9" y1="3" x2="9" y2="21" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex-1 flex flex-col items-center justify-center text-discord-text-muted p-8 text-center">
-              <div className="w-16 h-16 mb-4 rounded-full bg-discord-server-rail flex items-center justify-center">
-                <span className="text-4xl">👋</span>
-              </div>
-              <h3 className="text-xl font-bold text-discord-text-normal mb-2">Welcome to DevChat, {user.username}!</h3>
-              <p className="max-w-md">Select a channel from the sidebar to start chatting, or create a new project!</p>
-            </div>
-          </div>
+          <WelcomeScreen user={user} sidebarOpen={sidebarOpen} toggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
         )}
       </main>
+    </div>
+  );
+}
+
+
+function WelcomeScreen({ user, sidebarOpen, toggleSidebar }) {
+  return (
+    <div className="flex-1 flex flex-col relative overflow-hidden">
+      {/* Sidebar toggle */}
+      <div className="absolute top-4 left-4 z-10">
+        <button
+          onClick={toggleSidebar}
+          className="text-text-muted hover:text-white transition-colors p-2 rounded-lg hover:bg-dc-hover"
+          title={sidebarOpen ? "Close Sidebar" : "Open Sidebar"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Background orbs */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="orb w-80 h-80 bg-[#5865F2] top-1/4 left-1/4 opacity-10" />
+        <div className="orb w-64 h-64 bg-[#7c3aed] bottom-1/4 right-1/4 opacity-10" style={{ animationDelay: "3s" }} />
+      </div>
+
+      {/* Welcome content */}
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center relative z-10">
+        <div className="w-24 h-24 rounded-2xl overflow-hidden border-2 border-white/10 shadow-2xl mb-6 animate-scale-in">
+          <img src={getAvatarUrl(user.username, user.gender)} alt="Avatar" className="w-full h-full object-cover" />
+        </div>
+        <h2 className="text-3xl font-black text-white mb-2 animate-fade-in-up">
+          Welcome, <span className="gradient-text">{user.username}</span>!
+        </h2>
+        <p className="text-text-secondary max-w-sm animate-fade-in-up" style={{ animationDelay: "0.1s" }}>
+          Select a channel from the sidebar to start chatting, or create a new project.
+        </p>
+        <div className="flex gap-3 mt-8 animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
+          <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">⚡ Real-time chat</div>
+          <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">🐍 Python execution</div>
+          <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">🔒 Private rooms</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PageLoader() {
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-dc-bg">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-12 h-12 rounded-xl gradient-animated flex items-center justify-center text-white font-black text-lg animate-pulse-slow">DC</div>
+        <div className="text-text-muted text-sm">Loading...</div>
+      </div>
     </div>
   );
 }
@@ -70,15 +119,18 @@ function App() {
     <AuthProvider>
       <Router>
         <Routes>
+          <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route
-            path="/*"
+            path="/app"
             element={
               <ProtectedRoute>
                 <ChatLayout />
               </ProtectedRoute>
             }
           />
+          {/* Legacy redirect */}
+          <Route path="/*" element={<Navigate to="/" />} />
         </Routes>
       </Router>
     </AuthProvider>

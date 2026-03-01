@@ -1,107 +1,340 @@
 @import "tailwindcss";
 
+/* ============================================================
+   DESIGN TOKENS
+   ============================================================ */
 @theme {
-  --color-discord-bg: #313338;
-  --color-discord-sidebar: #2b2d31;
-  --color-discord-server-rail: #1e1f22;
-  --color-discord-blurple: #5865F2;
-  --color-discord-green: #23a559;
-  --color-discord-red: #da373c;
-  --color-discord-text-normal: #dbdee1;
-  --color-discord-text-muted: #949ba4;
-  --color-discord-hover: #3f4147;
-  --color-discord-active: #404249;
-  --color-discord-divider: #1e1f22;
+  /* Base surfaces */
+  --color-dc-bg:        #0d0e11;
+  --color-dc-surface:   #13151a;
+  --color-dc-panel:     #1a1c22;
+  --color-dc-sidebar:   #111318;
+  --color-dc-rail:      #0a0b0e;
+  --color-dc-card:      #1e2028;
+  --color-dc-hover:     #23262e;
+  --color-dc-active:    #2a2d38;
+  --color-dc-border:    #2a2d38;
 
-  --animate-fade-in-up: fadeInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-fade-in: fadeIn 0.15s ease-out;
-  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  /* Discord compat aliases (keep old classes working) */
+  --color-discord-bg:           #0d0e11;
+  --color-discord-sidebar:      #111318;
+  --color-discord-server-rail:  #0a0b0e;
+  --color-discord-blurple:      #5865F2;
+  --color-discord-blurple-hover:#4752c4;
+  --color-discord-green:        #23a559;
+  --color-discord-red:          #da373c;
+  --color-discord-text-normal:  #e2e4e9;
+  --color-discord-text-muted:   #72767d;
+  --color-discord-hover:        #23262e;
+  --color-discord-active:       #2a2d38;
+  --color-discord-divider:      #1e2028;
+
+  /* Accent palette */
+  --color-accent-purple: #5865F2;
+  --color-accent-violet: #7c3aed;
+  --color-accent-cyan:   #06b6d4;
+  --color-accent-green:  #10b981;
+  --color-accent-rose:   #f43f5e;
+  --color-accent-amber:  #f59e0b;
+
+  /* Text */
+  --color-text-primary:   #f0f2f5;
+  --color-text-secondary: #a0a5b3;
+  --color-text-muted:     #5c6370;
+  --color-text-accent:    #7c8cff;
+
+  /* --------------------------------------------------------
+     ANIMATION LIBRARY
+     -------------------------------------------------------- */
+  --animate-fade-in:        fadeIn 0.2s ease-out both;
+  --animate-fade-in-up:     fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in-down:   fadeInDown 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in-left:  slideInLeft 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in-right: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-scale-in:       scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-shimmer:        shimmer 2s linear infinite;
+  --animate-float:          float 6s ease-in-out infinite;
+  --animate-float-slow:     float 9s ease-in-out infinite;
+  --animate-pulse-glow:     pulseGlow 2s ease-in-out infinite;
+  --animate-pulse-slow:     pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-spin-slow:      spin 8s linear infinite;
+  --animate-bounce-soft:    bounceSoft 1.5s ease-in-out infinite;
+  --animate-gradient:       gradientShift 8s ease infinite;
+  --animate-typing:         typing 1s steps(3, end) infinite;
 
   @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-
-    to {
-      opacity: 1;
-    }
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
-
   @keyframes fadeInUp {
-    0% {
-      opacity: 0;
-      transform: translateY(5px);
-    }
-
-    100% {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+  @keyframes fadeInDown {
+    from { opacity: 0; transform: translateY(-12px); }
+    to   { opacity: 1; transform: translateY(0);     }
+  }
+  @keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-24px); }
+    to   { opacity: 1; transform: translateX(0);     }
+  }
+  @keyframes slideInRight {
+    from { opacity: 0; transform: translateX(24px); }
+    to   { opacity: 1; transform: translateX(0);    }
+  }
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.88); }
+    to   { opacity: 1; transform: scale(1);    }
+  }
+  @keyframes shimmer {
+    0%   { background-position: -200% center; }
+    100% { background-position:  200% center; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0);    }
+    50%       { transform: translateY(-14px); }
+  }
+  @keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(88,101,242,0); }
+    50%       { box-shadow: 0 0 20px 4px rgba(88,101,242,0.4); }
+  }
+  @keyframes bounceSoft {
+    0%, 100% { transform: translateY(0);   }
+    50%       { transform: translateY(-6px); }
+  }
+  @keyframes gradientShift {
+    0%   { background-position: 0%   50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0%   50%; }
+  }
+  @keyframes typing {
+    0%   { content: ".";   }
+    33%  { content: "..";  }
+    66%  { content: "..."; }
+    100% { content: ".";   }
+  }
+  @keyframes orb {
+    0%, 100% { transform: translate(0, 0) scale(1);         }
+    25%       { transform: translate(30px, -20px) scale(1.05); }
+    50%       { transform: translate(-20px, 30px) scale(0.95); }
+    75%       { transform: translate(20px, 20px) scale(1.02);  }
+  }
+  @keyframes orbReverse {
+    0%, 100% { transform: translate(0, 0) scale(1);         }
+    25%       { transform: translate(-30px, 20px) scale(1.05); }
+    50%       { transform: translate(20px, -30px) scale(0.95); }
+    75%       { transform: translate(-20px, -20px) scale(1.02); }
   }
 }
 
+/* ============================================================
+   BASE LAYER
+   ============================================================ */
 @layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
   body {
-    @apply bg-discord-bg text-discord-text-normal antialiased;
+    @apply bg-dc-bg text-text-primary antialiased;
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  }
+
+  ::selection {
+    background: rgba(88, 101, 242, 0.35);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgba(88, 101, 242, 0.7);
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  @apply bg-discord-server-rail;
-}
-
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  @apply bg-discord-sidebar rounded-full hover:bg-discord-hover transition-colors;
+  background: rgba(255,255,255,0.08);
+  border-radius: 99px;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+
+/* ============================================================
+   UTILITY CLASSES
+   ============================================================ */
+
+/* Glassmorphism card */
+.glass {
+  background: rgba(255,255,255,0.04);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+.glass-strong {
+  background: rgba(255,255,255,0.07);
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  border: 1px solid rgba(255,255,255,0.10);
 }
 
-.chat-header {
-  display: flex;
-  justify-content: space-between;
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #7c8cff 0%, #a78bfa 40%, #38bdf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.gradient-text-gold {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b, #ef4444);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Animated gradient background */
+.gradient-animated {
+  background: linear-gradient(-45deg, #5865F2, #7c3aed, #06b6d4, #10b981);
+  background-size: 400% 400%;
+  animation: var(--animate-gradient);
+}
+
+/* Shimmer effect */
+.shimmer {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,255,255,0.06) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+/* Glow utilities */
+.glow-purple { box-shadow: 0 0 20px rgba(88,101,242,0.4), 0 0 40px rgba(88,101,242,0.2); }
+.glow-cyan   { box-shadow: 0 0 20px rgba(6,182,212,0.4),  0 0 40px rgba(6,182,212,0.1);  }
+.glow-green  { box-shadow: 0 0 20px rgba(16,185,129,0.4), 0 0 40px rgba(16,185,129,0.1); }
+.glow-rose   { box-shadow: 0 0 20px rgba(244,63,94,0.4),  0 0 40px rgba(244,63,94,0.1);  }
+
+/* Buttons */
+.btn-primary {
+  display: inline-flex;
   align-items: center;
-  padding: 10px 20px;
-  background: #141824;
-  border-bottom: 1px solid #1f2430;
-}
-
-.clear-btn {
-  background: #ff4d4d;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-  color: white;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.5rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: 0.2s;
+  border: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  background: linear-gradient(135deg, #5865F2 0%, #7c3aed 100%);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(88,101,242,0.35);
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(88,101,242,0.5);
+}
+.btn-primary:active { transform: translateY(0); }
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.5rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: #e2e4e9;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.btn-ghost:hover {
+  background: rgba(255,255,255,0.09);
+  border-color: rgba(255,255,255,0.2);
+  transform: translateY(-1px);
 }
 
-.clear-btn:hover {
-  background: #ff1a1a;
+/* Input */
+.input-field {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  color: #e2e4e9;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+  outline: none;
+}
+.input-field::placeholder { color: rgba(160,165,179,0.5); }
+.input-field:focus {
+  border-color: rgba(88,101,242,0.6);
+  background: rgba(88,101,242,0.06);
+  box-shadow: 0 0 0 3px rgba(88,101,242,0.15);
+}
+.input-field.error {
+  border-color: rgba(244,63,94,0.6);
+  animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+}
+@keyframes shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px);  }
+  30%, 50%, 70% { transform: translateX(-3px); }
+  40%, 60% { transform: translateX(3px);  }
 }
 
+/* ============================================================
+   CODE EXECUTION BLOCKS
+   ============================================================ */
 .exec {
-  margin-top: 6px;
-  padding: 10px;
-  border-radius: 6px;
-  font-family: monospace;
-  font-size: 13px;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  border: 1px solid transparent;
+  transition: all 0.3s;
 }
-
 .exec.running {
-  background: #2a2a1a;
-  color: #ffaa00;
+  background: rgba(245,158,11,0.08);
+  border-color: rgba(245,158,11,0.2);
+  color: #fbbf24;
+  animation: var(--animate-pulse-slow);
 }
-
 .exec.success {
-  background: #0f1f0f;
-  color: #39ff14;
+  background: rgba(16,185,129,0.08);
+  border-color: rgba(16,185,129,0.2);
+  color: #34d399;
+}
+.exec.error {
+  background: rgba(244,63,94,0.08);
+  border-color: rgba(244,63,94,0.2);
+  color: #fb7185;
 }
 
-.exec.error {
-  background: #2a0f0f;
-  color: #ff4d4d;
+/* ============================================================
+   ANIMATED ORB (Landing page background)
+   ============================================================ */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.25;
+  animation: orb 12s ease-in-out infinite;
+  pointer-events: none;
+}
+.orb-reverse {
+  animation: orbReverse 14s ease-in-out infinite;
 }

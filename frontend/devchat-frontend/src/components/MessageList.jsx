@@ -1,82 +1,348 @@
-export default function MessageList({ messages, username }) {
-  const formatTime = (timestamp) => {
-    if (!timestamp) return "Just now";
-    try {
-      const date = new Date(timestamp);
-      if (isNaN(date.getTime())) return "Just now";
-      return "Today at " + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch (e) {
-      return "Just now";
-    }
-  };
+import { useRef, useEffect } from "react";
+import { getAvatarUrl } from "../utils/avatar";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+function formatTime(timestamp) {
+  if (!timestamp) return "";
+  try {
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return "";
+    const now = Date.now();
+    const diff = now - date.getTime();
+    if (diff < MINUTE) return "just now";
+    if (diff < HOUR) return `${Math.floor(diff / MINUTE)}m ago`;
+    if (diff < DAY) return "Today at " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (diff < 2 * DAY) return "Yesterday at " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function isSameUser(a, b) {
+  return a?.message?.sender === b?.message?.sender;
+}
+
+function withinMinutes(a, b, mins = 5) {
+  try {
+    return Math.abs(new Date(a.message.timestamp) - new Date(b.message.timestamp)) < mins * 60000;
+  } catch { return false; }
+}
+
+/** Show accurate avatar taking gender from the members array if possible */
+function getMessageAvatarUrl(sender, currentUser, members) {
+  if (sender === currentUser?.username) {
+    return getAvatarUrl(currentUser.username, currentUser.gender);
+  }
+  const member = members.find(m => m.username === sender);
+  return getAvatarUrl(sender, member?.gender || null);
+}
+
+/** Show nickname from members array if present. */
+function getDisplayName(sender, currentUser, members) {
+  if (sender === currentUser?.username) {
+    return currentUser.nickname || currentUser.username;
+  }
+  const member = members.find(m => m.username === sender);
+  return member?.nickname || sender;
+}
+
+function resolveUrl(url) {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (url.startsWith("/")) return `${API_BASE}${url}`;
+  return `${API_BASE}/${url}`;
+}
+
+export default function MessageList({ messages, user, members = [], onlineUsers = [], onEdit, onDelete, onReply }) {
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
 
   return (
-    <div className="flex flex-col gap-[17px] py-4">
+    <div className="flex flex-col gap-0.5">
       {messages.map((msg, i) => {
-        const isUser = msg.message.sender === username;
-        // Check if previous message was from same user within short time (grouping) - simplified for now
-        const showHeader = true;
-
+        const isUser = msg.message.sender === user?.username;
+        const prev = messages[i - 1];
+        const isGrouped = prev && isSameUser(prev, msg) && withinMinutes(prev, msg);
         return (
-          <div
-            key={i}
-            className={`flex gap-4 px-2 py-0.5 hover:bg-discord-hover/30 -mx-4 px-4 group animate-fade-in-up ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
-            style={{ animationDelay: `${i * 0.05}s` }}
-          >
-            {/* Avatar */}
-            <div className="flex-shrink-0 mt-0.5 cursor-pointer">
-              <div className={`
-                w-10 h-10 rounded-full flex items-center justify-center text-white font-medium text-sm overflow-hidden transition-opacity hover:opacity-80
-                ${isUser ? 'bg-discord-blurple' : 'bg-discord-green'}
-              `}>
-                <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.message.sender}`} alt="avatar" className="w-full h-full" />
+          <MessageBubble
+            key={`${msg.message.id}-${i}`}
+            msg={msg}
+            isUser={isUser}
+            isGrouped={isGrouped}
+            index={i}
+            currentUser={user}
+            members={members}
+            isOnline={onlineUsers.includes(msg.message.sender)}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onReply={onReply}
+          />
+        );
+      })}
+      <div ref={bottomRef} />
+    </div>
+  );
+}
+
+function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, isOnline, onEdit, onDelete, onReply }) {
+  const avatarUrl = getMessageAvatarUrl(msg.message.sender, currentUser, members);
+  const displayName = getDisplayName(msg.message.sender, currentUser, members);
+
+  return (
+    <div
+      className={`flex gap-3 px-2 py-0.5 group/row hover:bg-white/[0.03] rounded-xl transition-colors animate-fade-in-up w-full ${isUser ? "flex-row-reverse" : "flex-row"} ${isGrouped ? "mt-0" : "mt-3"}`}
+      style={{ animationDelay: `${Math.min(index * 0.03, 0.3)}s` }}
+    >
+      {/* Avatar — completely hidden for current user, hidden for others when grouped */}
+      {!isUser && (
+        <div className="flex-shrink-0 w-10 self-end">
+          {!isGrouped && (
+            <div className="relative">
+              <div className="w-9 h-9 rounded-full overflow-hidden border border-white/[0.08] bg-dc-panel shadow-sm">
+                <img
+                  src={avatarUrl}
+                  alt={displayName}
+                  className="w-full h-full object-cover"
+                  onError={(e) => { e.target.style.display = "none"; }}
+                />
               </div>
+              {isOnline && (
+                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-accent-green rounded-full border-2 border-dc-bg" />
+              )}
             </div>
+          )}
+        </div>
+      )}
 
-            {/* Content */}
-            <div className={`flex-1 min-w-0 flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-              {showHeader && (
-                <div className={`flex items-center gap-2 mb-1 ${isUser ? 'flex-row-reverse' : ''}`}>
-                  <span className={`font-medium cursor-pointer hover:underline ${isUser ? 'text-discord-blurple' : 'text-discord-green'}`}>
-                    {msg.message.sender}
-                  </span>
-                  <span className="text-xs text-discord-text-muted">{formatTime(msg.message.timestamp)}</span>
-                </div>
-              )}
+      {/* Content */}
+      <div className={`flex flex-col max-w-[75%] relative ${isUser ? "items-end" : "items-start"}`}>
+        {/* Header row (display name + time) - username hidden for current user */}
+        {!isGrouped && (
+          <div className="flex items-baseline gap-2 mb-1">
+            {!isUser && (
+              <span className="text-sm font-semibold text-accent-green">
+                {displayName}
+              </span>
+            )}
+            <span className="text-xs text-text-muted opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center gap-1.5">
+              {formatTime(msg.message.timestamp)}
+              {msg.message.is_edited && !msg.message.is_deleted && <span className="italic text-[10px] bg-white/[0.04] px-1.5 py-0.5 rounded-md">(edited)</span>}
+            </span>
+          </div>
+        )}
 
-              <div className={`
-                whitespace-pre-wrap break-words leading-[1.375rem] w-fit max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm border
-                ${isUser
-                  ? 'bg-discord-blurple/10 border-discord-blurple/20 text-discord-text-normal rounded-tr-none'
-                  : 'bg-discord-server-rail border-transparent text-discord-text-normal rounded-tl-none'}
-              `}>
-                {msg.message.content}
-              </div>
-
-              {/* Execution state handling */}
-              {msg.message.type === "code" && (
-                <div className={`mt-2 w-full max-w-[85%] ${isUser ? 'text-right' : 'text-left'}`}>
-                  {msg.execution?.status === "running" && (
-                    <div className="exec running">⏳ Running...</div>
-                  )}
-
-                  {msg.execution?.status === "success" && (
-                    <div className="exec success text-left">
-                      <pre className="whitespace-pre-wrap break-words">{msg.execution.stdout}</pre>
-                    </div>
-                  )}
-
-                  {msg.execution?.status === "error" && (
-                    <div className="exec error text-left">
-                      <pre className="whitespace-pre-wrap break-words">{msg.execution.stderr}</pre>
-                    </div>
-                  )}
-                </div>
-              )}
+        {/* Reply Snippet */}
+        {msg.message.reply_to && !msg.message.is_deleted && (
+          <div className={`flex items-center gap-2 mb-1 text-xs opacity-75 max-w-[90%] ${isUser ? "justify-end mr-1" : "justify-start ml-1"}`}>
+            <div className={`w-4 h-4 border-l-2 border-t-2 border-white/20 rounded-tl-lg mt-2 -ml-2 ${isUser && "scale-x-[-1]"}`} />
+            <div className="bg-white/5 rounded-md px-2 py-1 flex items-center gap-2 truncate shadow-sm">
+              <span className="font-semibold text-accent-purple shrink-0">{msg.message.reply_to.sender}</span>
+              <span className="text-text-muted truncate">{msg.message.reply_to.content}</span>
             </div>
           </div>
+        )}
+
+        {/* Message body */}
+        <div className={`relative flex items-center z-10 w-full ${isUser ? "justify-end" : "justify-start"}`}>
+
+          {/* Custom Hover Toolbar (Replacing right-click menu) */}
+          {!msg.message.is_deleted && (
+            <div className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 transition-all duration-200 flex items-center bg-dc-panel border border-white/10 rounded-lg shadow-xl overflow-hidden z-20 ${isUser ? "right-[100%] mr-2" : "left-[100%] ml-2"}`}>
+              <button onClick={() => onReply(msg)} className="p-1.5 text-text-muted hover:text-white hover:bg-white/10 transition-colors" title="Reply">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>
+              </button>
+
+              {isUser && (
+                <>
+                  <div className="w-px h-4 bg-white/10 mx-0.5" />
+                  <button onClick={() => onEdit(msg)} className="p-1.5 text-text-muted hover:text-accent-purple hover:bg-white/10 transition-colors" title="Edit">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                  </button>
+                  <button onClick={() => onDelete(msg.message.id)} className="p-1.5 text-text-muted hover:text-discord-red hover:bg-white/10 transition-colors" title="Delete">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {msg.message.is_deleted ? (
+            <div className={`
+              px-4 py-2.5 rounded-2xl text-sm italic
+              ${isUser
+                ? "bg-transparent border border-white/[0.04] text-text-muted rounded-tr-sm"
+                : "bg-transparent border border-white/[0.04] text-text-muted rounded-tl-sm"}
+            `}>
+              <span className="opacity-70 flex items-center gap-1.5">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+                This message was deleted.
+              </span>
+            </div>
+          ) : msg.message.type === "code" ? (
+            <CodeMessage msg={msg} isUser={isUser} />
+          ) : (
+            <TextMessage msg={msg} isUser={isUser} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TextMessage({ msg, isUser }) {
+  const attachments = msg.message.attachments || [];
+  return (
+    <div className={`w-full rounded-2xl overflow-hidden border shadow-sm transition-all max-w-full ${isUser
+      ? "bg-accent-purple/20 border-accent-purple/20 rounded-tr-sm"
+      : "bg-dc-card border-white/[0.05] rounded-tl-sm"}`}>
+      {msg.message.content && (
+        <div className="px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-text-primary">
+          {msg.message.content}
+        </div>
+      )}
+      {attachments.length > 0 && <AttachmentBlock attachments={attachments} />}
+    </div>
+  );
+}
+
+function CodeMessage({ msg, isUser }) {
+  const attachments = msg.message.attachments || [];
+  return (
+    <div className={`w-full rounded-2xl overflow-hidden border ${isUser ? "border-accent-purple/20 rounded-tr-sm" : "border-white/[0.06] rounded-tl-sm"}`}>
+      {/* Code header */}
+      <div className={`flex items-center justify-between px-3 py-2 text-xs font-mono ${isUser ? "bg-accent-purple/10" : "bg-dc-panel"}`}>
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-rose-500/70" />
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-500/70" />
+          <span className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
+        </div>
+        <span className="text-text-muted uppercase tracking-wider text-[10px]">
+          {msg.message.language || "code"}
+        </span>
+      </div>
+
+      {/* Code body */}
+      <pre className="px-4 py-3 text-xs font-mono text-accent-green bg-dc-rail/80 overflow-x-auto whitespace-pre leading-relaxed">
+        {msg.message.content}
+      </pre>
+
+      {/* Execution output */}
+      {msg.message.type === "code" && (
+        <ExecutionBlock execution={msg.execution} />
+      )}
+      {attachments.length > 0 && <AttachmentBlock attachments={attachments} />}
+    </div>
+  );
+}
+
+function AttachmentBlock({ attachments }) {
+  return (
+    <div className="px-3 pb-3 space-y-2">
+      {attachments.map((att, idx) => {
+        const url = resolveUrl(att.url);
+        const isImage = att.content_type?.startsWith("image/");
+        const isAudio = att.content_type?.startsWith("audio/");
+
+        if (isImage) {
+          return (
+            <a key={`${att.url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition-colors">
+              <img src={url} alt={att.file_name} className="max-h-72 w-full object-cover" />
+            </a>
+          );
+        }
+
+        if (isAudio) {
+          return (
+            <div key={`${att.url}-${idx}`} className="rounded-xl border border-white/10 bg-black/20 p-2.5">
+              <div className="text-[11px] text-text-muted mb-1">{att.file_name}</div>
+              <audio controls className="w-full h-9">
+                <source src={url} type={att.content_type || "audio/webm"} />
+              </audio>
+            </div>
+          );
+        }
+
+        return (
+          <a
+            key={`${att.url}-${idx}`}
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-black/20 p-2.5 hover:bg-black/30 transition-colors"
+          >
+            <FileAttachmentIcon className="w-5 h-5 text-accent-cyan flex-shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs text-white truncate">{att.file_name}</div>
+              <div className="text-[11px] text-text-muted">
+                {(att.file_size / 1024).toFixed(1)} KB
+              </div>
+            </div>
+          </a>
         );
       })}
     </div>
+  );
+}
+
+function ExecutionBlock({ execution }) {
+  if (!execution) return null;
+
+  if (execution.status === "running") {
+    return (
+      <div className="px-4 py-3 flex items-center gap-2 bg-amber-500/5 border-t border-amber-500/10">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse-slow" />
+        <span className="text-xs text-amber-400 font-mono">Running...</span>
+      </div>
+    );
+  }
+
+  if (execution.status === "success" && execution.stdout) {
+    return (
+      <div className="px-4 py-3 border-t border-accent-green/10 bg-accent-green/5">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <span className="w-2 h-2 rounded-full bg-accent-green" />
+          <span className="text-[10px] text-accent-green font-semibold uppercase tracking-wider">Output</span>
+        </div>
+        <pre className="text-xs text-accent-green/90 font-mono whitespace-pre-wrap break-words">
+          {execution.stdout}
+        </pre>
+      </div>
+    );
+  }
+
+  if (execution.status === "error") {
+    const errMsg = execution.stderr || "Unknown error";
+    return (
+      <div className="px-4 py-3 border-t border-discord-red/10 bg-discord-red/5">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <span className="w-2 h-2 rounded-full bg-discord-red" />
+          <span className="text-[10px] text-discord-red font-semibold uppercase tracking-wider">Error</span>
+        </div>
+        <pre className="text-xs text-discord-red/90 font-mono whitespace-pre-wrap break-words">
+          {errMsg}
+        </pre>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function FileAttachmentIcon({ className = "w-5 h-5" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v5h5" />
+      <path d="M9 13h6M9 17h4" />
+    </svg>
   );
 }

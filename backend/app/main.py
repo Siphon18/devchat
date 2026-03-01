@@ -1,18 +1,141 @@
-print("MAIN.PY LOADED")
 import os
-from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status
+import time
+from collections import defaultdict, deque
+from threading import Lock
+import uuid
+from pathlib import Path
+from urllib.parse import urlparse
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, func
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
 from app.database import Base, engine, SessionLocal
 from app import models, schemas, auth
 from app.executor import execute_python
 from app.websocket import manager
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.models import CodeExecution
 from jose import JWTError, jwt
 
+from fastapi.encoders import jsonable_encoder
 
-app = FastAPI()
+
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_DOCS = env_bool("ENABLE_DOCS", False)
+app = FastAPI(
+    docs_url="/docs" if ENABLE_DOCS else None,
+    redoc_url="/redoc" if ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_DOCS else None,
+)
+
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_SIZE = 15 * 1024 * 1024  # 15 MB
+MAX_USER_STORAGE_BYTES = int(os.getenv("MAX_USER_STORAGE_BYTES", str(250 * 1024 * 1024)))
+MAX_ATTACHMENTS_PER_MESSAGE = int(os.getenv("MAX_ATTACHMENTS_PER_MESSAGE", "10"))
+MAX_ATTACHMENT_FILE_NAME_LEN = 255
+ALLOWED_UPLOAD_PREFIXES = ("image/", "audio/")
+ALLOWED_DOC_TYPES = {
+    "application/pdf",
+    "text/plain",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_DEFAULT_MAX = int(os.getenv("RATE_LIMIT_DEFAULT_MAX", "240"))
+RATE_LIMIT_AUTH_MAX = int(os.getenv("RATE_LIMIT_AUTH_MAX", "15"))
+RATE_LIMIT_UPLOAD_MAX = int(os.getenv("RATE_LIMIT_UPLOAD_MAX", "30"))
+RATE_LIMIT_MESSAGE_MAX = int(os.getenv("RATE_LIMIT_MESSAGE_MAX", "120"))
+
+_rate_state: dict[str, deque[float]] = defaultdict(deque)
+_rate_lock = Lock()
+
+# ── CORS — must be before any route definitions ──────────────────────────
+frontend_url = os.getenv("FRONTEND_URL", "").strip()
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost",
+    "http://localhost:80",
+    "http://127.0.0.1:8000",
+]
+if frontend_url:
+    allowed_origins.append(frontend_url)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip() or "unknown"
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit_bucket(request: Request) -> tuple[str, int]:
+    path = request.url.path
+    if path == "/token":
+        return ("auth", RATE_LIMIT_AUTH_MAX)
+    if path == "/register":
+        return ("register", RATE_LIMIT_AUTH_MAX)
+    if path == "/uploads":
+        return ("upload", RATE_LIMIT_UPLOAD_MAX)
+    if path == "/messages" and request.method.upper() == "POST":
+        return ("messages", RATE_LIMIT_MESSAGE_MAX)
+    if path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
+        return ("docs", RATE_LIMIT_DEFAULT_MAX)
+    return ("default", RATE_LIMIT_DEFAULT_MAX)
+
+
+@app.middleware("http")
+async def apply_rate_limit(request: Request, call_next):
+    bucket, max_requests = rate_limit_bucket(request)
+    if max_requests <= 0:
+        return await call_next(request)
+
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+    client_ip = get_client_ip(request)
+    key = f"{bucket}:{client_ip}"
+
+    with _rate_lock:
+        q = _rate_state[key]
+        while q and q[0] < window_start:
+            q.popleft()
+        if len(q) >= max_requests:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - q[0])))
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded. Try again shortly."},
+                headers={"Retry-After": str(retry_after)},
+            )
+        q.append(now)
+
+    return await call_next(request)
+
+
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # AUTH CONFIG
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -45,20 +168,148 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 
+def get_joined_project_membership(db: Session, project_id: int, user_id: int):
+    return db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.user_id == user_id,
+        models.ProjectMember.status == "joined",
+    ).first()
+
+
+def get_joined_room_membership(db: Session, room_id: int, user_id: int):
+    return db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == user_id,
+        models.RoomMember.status == "joined",
+    ).first()
+
+
+def require_project_membership(db: Session, project_id: int, user_id: int):
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    membership = get_joined_project_membership(db, project_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="Not a member of this project")
+    return membership
+
+
+def require_room_membership(db: Session, room_id: int, user_id: int):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    membership = get_joined_room_membership(db, room_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="Not a member of this room")
+    return membership
+
+
+def require_room_access(db: Session, room_id: int, user_id: int):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    require_project_membership(db, room.project_id, user_id)
+    if room.is_private:
+        require_room_membership(db, room_id, user_id)
+    return room
+
+
+def get_user_accessible_rooms_for_project(db: Session, project_id: int, user_id: int):
+    """
+    Public rooms are accessible to all joined project members.
+    Private rooms are accessible only to joined room members.
+    """
+    return db.query(models.Room).filter(
+        models.Room.project_id == project_id,
+        or_(
+            models.Room.is_private == False,
+            models.Room.members.any(
+                (models.RoomMember.user_id == user_id) &
+                (models.RoomMember.status == "joined")
+            )
+        )
+    ).all()
+
+
+def validate_upload_type(content_type: str):
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Unable to detect file type")
+    if content_type.startswith(ALLOWED_UPLOAD_PREFIXES):
+        return
+    if content_type in ALLOWED_DOC_TYPES:
+        return
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
+
+
+def normalize_uploaded_file_url(url: str) -> tuple[str, Path]:
+    parsed = urlparse(url)
+    raw_path = parsed.path or url
+    if not raw_path.startswith("/uploads/"):
+        raise HTTPException(status_code=400, detail="Invalid attachment URL")
+    filename = Path(raw_path).name
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid attachment URL")
+    stored_path = (UPLOAD_DIR / filename).resolve()
+    if stored_path.parent != UPLOAD_DIR or not stored_path.exists():
+        raise HTTPException(status_code=400, detail="Attachment file not found")
+    return f"/uploads/{filename}", stored_path
+
+
+def get_user_total_attachment_bytes(db: Session, username: str) -> int:
+    total = (
+        db.query(func.coalesce(func.sum(models.MessageAttachment.file_size), 0))
+        .join(models.Message, models.Message.id == models.MessageAttachment.message_id)
+        .filter(models.Message.sender == username)
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def persist_message_attachments(db: Session, message_id: int, attachments: list[dict] | None):
+    if not attachments:
+        return
+    for att in attachments[:MAX_ATTACHMENTS_PER_MESSAGE]:
+        url = att.get("url")
+        content_type = att.get("content_type")
+        if not url or not content_type:
+            continue
+        normalized_url, stored_path = normalize_uploaded_file_url(str(url))
+        normalized_type = str(content_type).lower()
+        validate_upload_type(normalized_type)
+        file_size = stored_path.stat().st_size
+        if file_size <= 0 or file_size > MAX_UPLOAD_SIZE:
+            continue
+        db.add(models.MessageAttachment(
+            message_id=message_id,
+            file_name=str(att.get("file_name", "attachment"))[:MAX_ATTACHMENT_FILE_NAME_LEN],
+            content_type=normalized_type,
+            file_size=file_size,
+            url=normalized_url,
+        ))
+
+
 # -------- AUTH ROUTES --------
 
 @app.post("/register", response_model=schemas.UserResponse)
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    from app.nicknames import generate_nickname
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
     
     hashed_password = auth.get_password_hash(user.password)
-    new_user = models.User(username=user.username, hashed_password=hashed_password)
+    new_user = models.User(
+        username=user.username, 
+        hashed_password=hashed_password,
+        gender=user.gender,
+        nickname=generate_nickname(),
+    )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     return new_user
+
 
 @app.post("/token", response_model=schemas.Token)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -77,25 +328,77 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 def read_users_me(current_user: models.User = Depends(get_current_user)):
     return current_user
 
-# -----------------------------
 
-# Allow frontend URLs from environment variable for deployment
-frontend_url = os.getenv("FRONTEND_URL", "").strip()
-allowed_origins = [
-    "http://localhost:5173",
-    "http://localhost",
-    "http://localhost:80",
-]
-if frontend_url:
-    allowed_origins.append(frontend_url)
+class NicknameUpdate(BaseModel):
+    nickname: str
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+@app.patch("/users/me", response_model=schemas.UserResponse)
+def update_nickname(
+    body: NicknameUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    current_user.nickname = body.nickname.strip()[:60] or None
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+# -------------------- ROOM ROUTES --------------------
+
+@app.get("/projects/public", response_model=list[schemas.ProjectResponse])
+def get_discoverable_projects(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Fetch all projects
+    all_projects = db.query(models.Project).all()
+    
+    # Filter out projects the user is already a member of
+    user_memberships = db.query(models.ProjectMember.project_id).filter(
+        models.ProjectMember.user_id == current_user.id,
+        models.ProjectMember.status == "joined"
+    ).all()
+    user_project_ids = {m[0] for m in user_memberships}
+    
+    available_projects = [p for p in all_projects if p.id not in user_project_ids]
+    return available_projects
+
+@app.post("/projects/{project_id}/join")
+def join_public_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if not project.is_public:
+        raise HTTPException(status_code=403, detail="Project is not public. Please request access.")
+
+    existing_mem = db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.user_id == current_user.id
+    ).first()
+    
+    if existing_mem:
+        if existing_mem.status == "joined":
+            raise HTTPException(status_code=400, detail="Already a member")
+        else:
+            existing_mem.status = "joined"
+            existing_mem.role = "member"
+    else:
+        new_mem = models.ProjectMember(
+            user_id=current_user.id,
+            project_id=project_id,
+            role="member",
+            status="joined"
+        )
+        db.add(new_mem)
+        
+    db.commit()
+    return {"status": "joined", "project_id": project_id}
 
 Base.metadata.create_all(bind=engine)
 
@@ -107,66 +410,270 @@ def root():
     return {"status": "DevChat backend running"}
 
 
+# -------- UPLOADS --------
+
+@app.post("/uploads", response_model=schemas.AttachmentUploadResponse)
+async def upload_attachment(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Keep explicit auth dependency to block anonymous uploads.
+    _ = current_user
+
+    content_type = (file.content_type or "").lower()
+    validate_upload_type(content_type)
+
+    payload = await file.read(MAX_UPLOAD_SIZE + 1)
+    if len(payload) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 15 MB)")
+    if len(payload) <= 0:
+        raise HTTPException(status_code=400, detail="Empty files are not allowed")
+
+    used_bytes = get_user_total_attachment_bytes(db, current_user.username)
+    if used_bytes + len(payload) > MAX_USER_STORAGE_BYTES:
+        max_mb = round(MAX_USER_STORAGE_BYTES / (1024 * 1024), 1)
+        raise HTTPException(status_code=413, detail=f"Storage quota exceeded (max {max_mb} MB per user)")
+
+    original_name = file.filename or "attachment.bin"
+    suffix = Path(original_name).suffix
+    safe_suffix = suffix[:16] if suffix else ""
+    stored_name = f"{uuid.uuid4().hex}{safe_suffix}"
+    stored_path = UPLOAD_DIR / stored_name
+    stored_path.write_bytes(payload)
+
+    return {
+        "file_name": original_name,
+        "content_type": content_type,
+        "file_size": len(payload),
+        "url": f"/uploads/{stored_name}",
+    }
+
+
+# -------- USERS --------
+
+@app.get("/users/search", response_model=list[schemas.UserSearchResponse])
+def search_users(q: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if not q or len(q) < 2:
+        return []
+    
+    users = db.query(models.User).filter(
+        or_(
+            models.User.username.ilike(f"%{q}%"),
+            models.User.nickname.ilike(f"%{q}%")
+        )
+    ).limit(20).all()
+    return users
+
+
 # -------- PROJECTS --------
 
-@app.post("/projects")
-def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+@app.post("/projects", response_model=schemas.ProjectResponse)
+def create_project(
+    project: schemas.ProjectCreate, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
     db_project = models.Project(
         name=project.name,
-        description=project.description,
-        github_url=project.github_url
+        owner_id=current_user.id,
+        is_public=project.is_public
     )
     db.add(db_project)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Project name already exists")
     db.refresh(db_project)
+
+    # Add creator as admin member
+    member = models.ProjectMember(
+        user_id=current_user.id,
+        project_id=db_project.id,
+        role="admin",
+        status="joined"
+    )
+    db.add(member)
+    db.commit()
+
     return db_project
 
 
 @app.get("/projects")
 def list_projects(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Project).all()
+    # Only return projects where the user is a member
+    return db.query(models.Project).join(models.ProjectMember).filter(
+        models.ProjectMember.user_id == current_user.id,
+        models.ProjectMember.status == "joined"
+    ).all()
 
 
 # -------- ROOMS --------
 
-@app.post("/rooms")
+@app.post("/rooms", response_model=schemas.RoomResponse)
 def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    project = db.query(models.Project).filter(models.Project.id == room.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the project owner can create rooms")
+
     db_room = models.Room(
         name=room.name,
-        project_id=room.project_id
+        project_id=room.project_id,
+        creator_id=current_user.id,
+        is_private=room.is_private
     )
     db.add(db_room)
     db.commit()
     db.refresh(db_room)
+
+    # Add creator as admin member
+    member = models.RoomMember(
+        user_id=current_user.id,
+        room_id=db_room.id,
+        role="admin",
+        status="joined"
+    )
+    db.add(member)
+    db.commit()
+    
     return db_room
 
 
-@app.get("/rooms/{project_id}")
+@app.get("/rooms/{project_id}", response_model=list[schemas.RoomResponse])
 def list_rooms(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Room).filter(models.Room.project_id == project_id).all()
+    require_project_membership(db, project_id, current_user.id)
+    return db.query(models.Room).filter(
+        models.Room.project_id == project_id,
+        or_(
+            models.Room.is_private == False,
+            models.Room.members.any(models.RoomMember.user_id == current_user.id)
+        )
+    ).all()
+
+
+@app.get("/rooms/{project_id}/unread")
+def get_unread_counts(
+    project_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    """Return unread message counts per room for a given project."""
+    from datetime import datetime, timezone
+
+    project_membership = require_project_membership(db, project_id, current_user.id)
+    joined_at = project_membership.joined_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
+    accessible_rooms = get_user_accessible_rooms_for_project(db, project_id, current_user.id)
+
+    result = {}
+    for room in accessible_rooms:
+        room_membership = db.query(models.RoomMember).filter(
+            models.RoomMember.room_id == room.id,
+            models.RoomMember.user_id == current_user.id,
+            models.RoomMember.status == "joined"
+        ).first()
+        last_read = (room_membership.last_read_at if room_membership else None) or joined_at
+        count = db.query(models.Message).filter(
+            models.Message.room_id == room.id,
+            models.Message.timestamp > last_read,
+            models.Message.sender != current_user.username,  # don't count own messages
+            models.Message.is_deleted == False
+        ).count()
+        if count > 0:
+            result[str(room.id)] = count
+    return result
+
+
+@app.get("/users/me/unread")
+def get_all_unread_counts(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Return total unread message counts across all rooms for the user."""
+    from datetime import datetime, timezone
+    
+    project_memberships = db.query(models.ProjectMember).filter(
+        models.ProjectMember.user_id == current_user.id,
+        models.ProjectMember.status == "joined"
+    ).all()
+    
+    result = {"rooms": {}, "projects": {}}
+    for pm in project_memberships:
+        joined_at = pm.joined_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
+        rooms = get_user_accessible_rooms_for_project(db, pm.project_id, current_user.id)
+        for room in rooms:
+            room_membership = db.query(models.RoomMember).filter(
+                models.RoomMember.room_id == room.id,
+                models.RoomMember.user_id == current_user.id,
+                models.RoomMember.status == "joined"
+            ).first()
+            last_read = (room_membership.last_read_at if room_membership else None) or joined_at
+            count = db.query(models.Message).filter(
+                models.Message.room_id == room.id,
+                models.Message.timestamp > last_read,
+                models.Message.sender != current_user.username,
+                models.Message.is_deleted == False
+            ).count()
+            if count > 0:
+                room_id = str(room.id)
+                result["rooms"][room_id] = count
+                pid_str = str(room.project_id)
+                result["projects"][pid_str] = result["projects"].get(pid_str, 0) + count
+                
+    return result
+
+
+@app.post("/rooms/{room_id}/read")
+def mark_room_read(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Mark a room as read by updating last_read_at."""
+    from datetime import datetime, timezone
+
+    room = require_room_access(db, room_id, current_user.id)
+    mem = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == current_user.id,
+    ).first()
+    if not mem:
+        mem = models.RoomMember(
+            user_id=current_user.id,
+            room_id=room.id,
+            role="member",
+            status="joined",
+        )
+        db.add(mem)
+    mem.last_read_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok"}
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    # 1. Get all rooms for this project
-    rooms = db.query(models.Room).filter(models.Room.project_id == project_id).all()
-    room_ids = [room.id for room in rooms]
-
-    # 2. Delete all messages in these rooms
-    if room_ids:
-        db.query(models.Message).filter(models.Message.room_id.in_(room_ids)).delete(synchronize_session=False)
-
-    # 3. Delete the rooms
-    db.query(models.Room).filter(models.Room.project_id == project_id).delete(synchronize_session=False)
-
-    # 4. Delete the project
-    db.query(models.Project).filter(models.Project.id == project_id).delete(synchronize_session=False)
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the project owner can delete this project")
     
+    db.delete(project)
     db.commit()
     return {"status": "deleted", "id": project_id}
 
 @app.delete("/rooms/{room_id}")
 def delete_room(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    db.query(models.Room).filter(models.Room.id == room_id).delete()
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    project = db.query(models.Project).filter(models.Project.id == room.project_id).first()
+    if not project or project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the project owner can delete rooms")
+        
+    db.delete(room)
     db.commit()
     return {"status": "deleted", "id": room_id}
 
@@ -174,14 +681,24 @@ def delete_room(room_id: int, db: Session = Depends(get_db), current_user: model
 
 @app.post("/messages")
 def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    require_room_access(db, message.room_id, current_user.id)
     db_message = models.Message(
         room_id=message.room_id,
-        sender=message.sender,
+        sender=current_user.username,
         type=message.type,
         language=message.language,
-        content=message.content
+        content=message.content,
+        reply_to_id=message.reply_to_id,
     )
     db.add(db_message)
+    db.commit()
+    db.refresh(db_message)
+
+    persist_message_attachments(
+        db,
+        db_message.id,
+        [a.model_dump() if hasattr(a, "model_dump") else a for a in (message.attachments or [])]
+    )
     db.commit()
     db.refresh(db_message)
 
@@ -207,16 +724,26 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
 
 
     return {
-        "message": db_message,
+        "message": jsonable_encoder(schemas.MessageResponse.from_orm(db_message)),
         "execution": execution_result
     }
 
 @app.get("/messages/{room_id}")
 def get_messages(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    messages = db.query(models.Message)\
-        .filter(models.Message.room_id == room_id)\
-        .order_by(models.Message.timestamp.asc())\
-        .all()
+    require_room_access(db, room_id, current_user.id)
+    # Check if user has cleared this chat recently
+    member = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == current_user.id,
+        models.RoomMember.status == "joined",
+    ).first()
+
+    query = db.query(models.Message).filter(models.Message.room_id == room_id)
+    
+    if member and member.cleared_at:
+        query = query.filter(models.Message.timestamp > member.cleared_at)
+        
+    messages = query.order_by(models.Message.timestamp.asc()).all()
 
     response = []
     for m in messages:
@@ -224,65 +751,609 @@ def get_messages(room_id: int, db: Session = Depends(get_db), current_user: mode
             .filter(CodeExecution.message_id == m.id)\
             .first()
 
+        msg_dict = schemas.MessageResponse.from_orm(m).dict()
+        
+        # Hydrate reply_to
+        if m.reply_to:
+            msg_dict["reply_to"] = schemas.MessageResponse.from_orm(m.reply_to).dict()
+            msg_dict["reply_to"].pop("reply_to", None) # Don't nest further
+
         response.append({
-            "message": m,
+            "message": msg_dict,
             "execution": execution
         })
 
     return response
 
 
-@app.delete("/messages/room/{room_id}")
-def clear_room_messages(room_id: int, db: Session = Depends(get_db)):
-    db.query(models.Message).filter(models.Message.room_id == room_id).delete()
-    db.commit()
-    return {"status": "cleared", "room_id": room_id}
+@app.put("/messages/{message_id}")
+async def edit_message(message_id: int, edit_data: schemas.MessageEdit, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    msg = db.query(models.Message).filter(models.Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    require_room_access(db, msg.room_id, current_user.id)
+    if msg.sender != current_user.username:
+        raise HTTPException(status_code=403, detail="You can only edit your own messages")
+    if msg.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot edit a deleted message")
 
+    msg.content = edit_data.content
+    msg.is_edited = True
+    db.commit()
+    db.refresh(msg)
+    
+    # Broadcast edit to room
+    await manager.broadcast(msg.room_id, {
+        "type": "message_update",
+        "message": jsonable_encoder(schemas.MessageResponse.from_orm(msg))
+    })
+    
+    return {"status": "success", "message": msg}
+
+
+@app.delete("/messages/{message_id}")
+async def delete_message(message_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    msg = db.query(models.Message).filter(models.Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    require_room_access(db, msg.room_id, current_user.id)
+    if msg.sender != current_user.username:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+
+    msg.is_deleted = True
+    # We clear the content to save space and ensure privacy, while keeping the record
+    msg.content = ""
+    db.commit()
+    db.refresh(msg)
+    
+    # Broadcast deletion to room
+    await manager.broadcast(msg.room_id, {
+        "type": "message_delete",
+        "message_id": msg.id,
+        "room_id": msg.room_id
+    })
+    
+    return {"status": "success", "message": msg}
+
+
+@app.delete("/messages/room/{room_id}")
+def clear_room_messages(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    from datetime import datetime, timezone
+    
+    room = require_room_access(db, room_id, current_user.id)
+
+    member = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == current_user.id,
+        models.RoomMember.status == "joined",
+    ).first()
+    
+    if not member:
+        member = models.RoomMember(
+            user_id=current_user.id,
+            room_id=room.id,
+            role="member",
+            status="joined",
+        )
+        db.add(member)
+
+    member.cleared_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    return {"status": "cleared", "room_id": room_id}
+  
+# --------------- ACCESS CONTROL (INVITES & REQUESTS) ---------------
+
+from pydantic import BaseModel as _PydanticBaseModel
+
+class InviteRequest(_PydanticBaseModel):
+    username: str
+
+@app.post("/invites/room/{room_id}")
+def invite_to_room(
+    room_id: int,
+    payload: InviteRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Only admin can invite
+    requester_membership = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == current_user.id
+    ).first()
+    if not requester_membership or requester_membership.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can invite")
+
+    invitee = db.query(models.User).filter(models.User.username == payload.username).first()
+    if not invitee:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    existing_member = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == invitee.id,
+        models.RoomMember.status == "joined"
+    ).first()
+    if existing_member:
+        raise HTTPException(status_code=400, detail="User is already a member")
+
+    existing_invite = db.query(models.Invite).filter(
+        models.Invite.target_id == room_id,
+        models.Invite.target_type == "room",
+        models.Invite.invitee_id == invitee.id,
+        models.Invite.status == "pending"
+    ).first()
+    if existing_invite:
+        raise HTTPException(status_code=400, detail="Invite already pending")
+
+    invite = models.Invite(
+        inviter_id=current_user.id,
+        invitee_id=invitee.id,
+        target_id=room_id,
+        target_type="room",
+        status="pending"
+    )
+    db.add(invite)
+    
+    # Optionally, also add them as "invited" RoomMember so old logic still kinda maps,
+    # but strictly speaking, the Invite table represents pending invites now.
+    db.commit()
+    return {"status": "invited", "username": invitee.username}
+
+
+@app.get("/invites/me", response_model=list[schemas.InviteResponse])
+def get_my_invites(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    invites = db.query(models.Invite).filter(
+        models.Invite.invitee_id == current_user.id,
+        models.Invite.status == "pending"
+    ).all()
+    # Populate names for frontend
+    for inv in invites:
+        inv.inviter_name = inv.inviter.username if inv.inviter else "Unknown"
+        if inv.target_type == "room":
+            room = db.query(models.Room).filter(models.Room.id == inv.target_id).first()
+            inv.target_name = room.name if room else f"Room {inv.target_id}"
+        elif inv.target_type == "project":
+            proj = db.query(models.Project).filter(models.Project.id == inv.target_id).first()
+            inv.target_name = proj.name if proj else f"Project {inv.target_id}"
+    return invites
+
+
+@app.get("/invites/me/count")
+def get_my_invite_count(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    count = db.query(models.Invite).filter(
+        models.Invite.invitee_id == current_user.id,
+        models.Invite.status == "pending"
+    ).count()
+    return {"count": count}
+
+
+class InviteAction(_PydanticBaseModel):
+    action: str # "accept" or "decline"
+
+@app.patch("/invites/{invite_id}")
+def respond_to_invite(
+    invite_id: int,
+    payload: InviteAction,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    invite = db.query(models.Invite).filter(
+        models.Invite.id == invite_id,
+        models.Invite.invitee_id == current_user.id,
+        models.Invite.status == "pending"
+    ).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already processed")
+
+    if payload.action == "accept":
+        invite.status = "accepted"
+        if invite.target_type == "room":
+            mem = db.query(models.RoomMember).filter(
+                models.RoomMember.room_id == invite.target_id,
+                models.RoomMember.user_id == current_user.id
+            ).first()
+            if mem:
+                mem.status = "joined"
+            else:
+                new_mem = models.RoomMember(
+                    user_id=current_user.id, 
+                    room_id=invite.target_id, 
+                    role="member", 
+                    status="joined"
+                )
+                db.add(new_mem)
+        elif invite.target_type == "project":
+            mem = db.query(models.ProjectMember).filter(
+                models.ProjectMember.project_id == invite.target_id,
+                models.ProjectMember.user_id == current_user.id
+            ).first()
+            if mem:
+                mem.status = "joined"
+            else:
+                new_mem = models.ProjectMember(
+                    user_id=current_user.id, 
+                    project_id=invite.target_id, 
+                    role="member", 
+                    status="joined"
+                )
+                db.add(new_mem)
+                
+    elif payload.action == "decline":
+        invite.status = "declined"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    db.commit()
+    return {"status": invite.status}
+
+
+
+@app.post("/invites/project/{project_id}")
+def invite_to_project(
+    project_id: int,
+    payload: InviteRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    requester_membership = db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.user_id == current_user.id
+    ).first()
+    if not requester_membership or requester_membership.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can invite")
+
+    invitee = db.query(models.User).filter(models.User.username == payload.username).first()
+    if not invitee:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    existing_member = db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.user_id == invitee.id,
+        models.ProjectMember.status == "joined"
+    ).first()
+    if existing_member:
+        raise HTTPException(status_code=400, detail="User is already a member")
+
+    existing_invite = db.query(models.Invite).filter(
+        models.Invite.target_id == project_id,
+        models.Invite.target_type == "project",
+        models.Invite.invitee_id == invitee.id,
+        models.Invite.status == "pending"
+    ).first()
+    if existing_invite:
+        raise HTTPException(status_code=400, detail="Invite already pending")
+
+    invite = models.Invite(
+        inviter_id=current_user.id,
+        invitee_id=invitee.id,
+        target_id=project_id,
+        target_type="project",
+        status="pending"
+    )
+    db.add(invite)
+    db.commit()
+    return {"status": "invited", "username": invitee.username}
+
+
+@app.post("/requests/room/{room_id}")
+def request_join_room(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
         
+    existing_mem = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.user_id == current_user.id,
+        models.RoomMember.status == "joined"
+    ).first()
+    if existing_mem:
+        raise HTTPException(status_code=400, detail="Already a member")
+
+    existing_req = db.query(models.AccessRequest).filter(
+        models.AccessRequest.target_id == room_id,
+        models.AccessRequest.target_type == "room",
+        models.AccessRequest.user_id == current_user.id,
+        models.AccessRequest.status == "pending"
+    ).first()
+    if existing_req:
+        raise HTTPException(status_code=400, detail="Request already pending")
+
+    req = models.AccessRequest(
+        user_id=current_user.id,
+        target_id=room_id,
+        target_type="room",
+        status="pending"
+    )
+    db.add(req)
+    db.commit()
+    return {"status": "requested"}
+
+
+@app.post("/requests/project/{project_id}")
+def request_join_project(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    proj = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    existing_mem = db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.user_id == current_user.id,
+        models.ProjectMember.status == "joined"
+    ).first()
+    if existing_mem:
+        raise HTTPException(status_code=400, detail="Already a member")
+
+    existing_req = db.query(models.AccessRequest).filter(
+        models.AccessRequest.target_id == project_id,
+        models.AccessRequest.target_type == "project",
+        models.AccessRequest.user_id == current_user.id,
+        models.AccessRequest.status == "pending"
+    ).first()
+    if existing_req:
+        raise HTTPException(status_code=400, detail="Request already pending")
+
+    req = models.AccessRequest(
+        user_id=current_user.id,
+        target_id=project_id,
+        target_type="project",
+        status="pending"
+    )
+    db.add(req)
+    db.commit()
+    return {"status": "requested"}
+
+
+@app.get("/requests/{target_type}/{target_id}", response_model=list[schemas.AccessRequestResponse])
+def get_pending_requests(
+    target_type: str, 
+    target_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    # Check if admin
+    if target_type == "room":
+        mem = db.query(models.RoomMember).filter(
+            models.RoomMember.room_id == target_id,
+            models.RoomMember.user_id == current_user.id
+        ).first()
+    elif target_type == "project":
+        mem = db.query(models.ProjectMember).filter(
+            models.ProjectMember.project_id == target_id,
+            models.ProjectMember.user_id == current_user.id
+        ).first()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid target type")
+
+    if not mem or mem.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can view requests")
+
+    reqs = db.query(models.AccessRequest).filter(
+        models.AccessRequest.target_id == target_id,
+        models.AccessRequest.target_type == target_type,
+        models.AccessRequest.status == "pending"
+    ).all()
+    for r in reqs:
+        r.username = r.user.username if r.user else "Unknown"
+    return reqs
+
+
+@app.patch("/requests/{request_id}")
+def respond_to_request(
+    request_id: int,
+    payload: dict, # {"action": "approve" | "deny"}
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    req = db.query(models.AccessRequest).filter(
+        models.AccessRequest.id == request_id, 
+        models.AccessRequest.status == "pending"
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found or processed")
+
+    # Check admin
+    if req.target_type == "room":
+        mem = db.query(models.RoomMember).filter(
+            models.RoomMember.room_id == req.target_id,
+            models.RoomMember.user_id == current_user.id
+        ).first()
+    else:
+        mem = db.query(models.ProjectMember).filter(
+            models.ProjectMember.project_id == req.target_id,
+            models.ProjectMember.user_id == current_user.id
+        ).first()
+
+    if not mem or mem.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can approve requests")
+
+    action = payload.get("action")
+    if action == "approve":
+        req.status = "approved"
+        if req.target_type == "room":
+            new_mem = models.RoomMember(user_id=req.user_id, room_id=req.target_id, role="member", status="joined")
+            db.add(new_mem)
+        else:
+            new_mem = models.ProjectMember(user_id=req.user_id, project_id=req.target_id, role="member", status="joined")
+            db.add(new_mem)
+    elif action == "deny":
+        req.status = "denied"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    db.commit()
+    return {"status": req.status}
+
+
+@app.get("/rooms/{room_id}/members", response_model=list[schemas.RoomMemberResponse])
+def get_room_members(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    require_project_membership(db, room.project_id, current_user.id)
+
+    members = db.query(models.RoomMember).filter(
+        models.RoomMember.room_id == room_id,
+        models.RoomMember.status == "joined"
+    ).all()
+
+    if room.is_private:
+        is_member = any(m.user_id == current_user.id for m in members)
+        if not is_member:
+            raise HTTPException(status_code=403, detail="Not a member of this private room")
+            
+    # Map nickname to the response
+    for m in members:
+        m.nickname = m.user.nickname if m.user else None
+
+    return members
+
+
+@app.get("/projects/{project_id}/members", response_model=list[schemas.ProjectMemberResponse])
+def get_project_members(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    members = db.query(models.ProjectMember).filter(
+        models.ProjectMember.project_id == project_id,
+        models.ProjectMember.status == "joined"
+    ).all()
+    
+    # Ensure requester has access
+    is_member = any(m.user_id == current_user.id for m in members)
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a member of this project")
+        
+    for m in members:
+        m.username = m.user.username if m.user else "Unknown"
+        m.nickname = m.user.nickname if m.user else None
+        m.gender = m.user.gender if m.user else "other"
+
+    return members
+
+
+@app.get("/rooms/{room_id}/online")
+def get_room_online_users(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_room_access(db, room_id, current_user.id)
+    # Returns list of usernames currently online in this room
+    return {"online": manager.get_online_users(room_id)}
+
+
+# -------------------- WEBSOCKET (with JWT auth) --------------------
+
+async def get_ws_user(token: str, db: Session) -> models.User:
+    """Validate JWT token from WebSocket query param."""
+    credentials_exception = WebSocketDisconnect(code=4001)
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+
 @app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: int):
-    await manager.connect(room_id, websocket)
+async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""):
+    # Authenticate before accepting the connection
+    if not token:
+        await websocket.close(code=4001)
+        return
+
+    db = SessionLocal()
+    try:
+        current_user = await get_ws_user(token, db)
+        try:
+            require_room_access(db, room_id, current_user.id)
+        except HTTPException:
+            raise WebSocketDisconnect(code=4003)
+    except WebSocketDisconnect as exc:
+        await websocket.close(code=exc.code)
+        return
+    finally:
+        db.close()
+
+    await manager.connect(room_id, websocket, current_user.username)
+    # Broadcast join presence event
+    await manager.broadcast(room_id, {
+        "type": "presence",
+        "online": manager.get_online_users(room_id)
+    })
 
     try:
         while True:
             data = await websocket.receive_json()
 
+            # Handle typing events — just broadcast, don't save
+            if data.get("type") == "typing":
+                await manager.broadcast(room_id, {
+                    "type": "typing",
+                    "username": current_user.username
+                })
+                continue
+
             db = SessionLocal()
             try:
+                msg_type = data.get("type")
+                content = data.get("content")
+                if msg_type not in {"text", "code"} or not isinstance(content, str):
+                    continue
+
+                raw_attachments = data.get("attachments") or []
+                attachments = [a for a in raw_attachments if isinstance(a, dict)]
+
                 db_message = models.Message(
                     room_id=room_id,
-                    sender=data["sender"],
-                    type=data["type"],
+                    sender=current_user.username,
+                    type=msg_type,
                     language=data.get("language"),
-                    content=data["content"]
+                    content=content,
+                    reply_to_id=data.get("reply_to_id")
                 )
                 db.add(db_message)
                 db.commit()
                 db.refresh(db_message)
 
-                execution_result = None
-                if data["type"] == "code" and data.get("language") == "python":
-                    execution_result = execute_python(data["content"])
+                persist_message_attachments(db, db_message.id, attachments)
+                db.commit()
+                db.refresh(db_message)
 
-# First broadcast: RUNNING state
-# Always broadcast the message first
+                msg_response_dict = jsonable_encoder(schemas.MessageResponse.from_orm(db_message))
+                if db_message.reply_to:
+                    msg_response_dict["reply_to"] = jsonable_encoder(schemas.MessageResponse.from_orm(db_message.reply_to))
+                    msg_response_dict["reply_to"].pop("reply_to", None)
+
+                # First broadcast: RUNNING state
+                # Always broadcast the message first
                 base_payload = {
-                    "message": {
-                        "id": db_message.id,
-                        "room_id": room_id,
-                        "sender": db_message.sender,
-                        "type": db_message.type,
-                        "language": db_message.language,
-                        "content": db_message.content,
-                        "timestamp": str(db_message.timestamp)
-                    },
+                    "message": msg_response_dict,
                     "execution": None
                 }
 
                 await manager.broadcast(room_id, base_payload)
 
                 # Second broadcast: EXECUTION state
-                if data["type"] == "code" and data.get("language") == "python":
+                if msg_type == "code" and data.get("language") == "python":
 
                     # 1. Send running state
                     running_payload = {
@@ -294,7 +1365,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                     await manager.broadcast(room_id, running_payload)
 
                     # 2. Execute code
-                    execution_result = execute_python(data["content"])
+                    execution_result = execute_python(content)
 
                     exec_entry = CodeExecution(
                         message_id=db_message.id,
@@ -326,7 +1397,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int):
                 db.close()
 
     except WebSocketDisconnect:
-        manager.disconnect(room_id, websocket)
+        manager.disconnect(room_id, websocket, current_user.username)
+        # Broadcast leave presence event
+        await manager.broadcast(room_id, {
+            "type": "presence",
+            "online": manager.get_online_users(room_id)
+        })
 
 
 
