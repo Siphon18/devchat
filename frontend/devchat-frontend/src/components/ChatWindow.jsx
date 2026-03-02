@@ -271,7 +271,7 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
           onClick={() => setShowClearConfirm(false)}
         >
           <div
-            className="glass-strong rounded-2xl p-6 w-80 animate-scale-in border border-white/[0.08]"
+            className="glass-strong rounded-2xl p-6 w-[calc(100vw-3rem)] max-w-80 animate-scale-in border border-white/[0.08]"
             onClick={e => e.stopPropagation()}
           >
             <div className="w-12 h-12 rounded-xl bg-discord-red/15 flex items-center justify-center mx-auto mb-4">

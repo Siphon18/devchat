@@ -36,6 +36,7 @@ function ChatLayout() {
         ref={sidebarRef}
         isOpen={sidebarOpen}
         onRoomSelect={setSelectedRoom}
+        onClose={() => setSidebarOpen(false)}
         username={user.username}
         gender={user.gender}
         activeRoomId={selectedRoom?.id}
@@ -93,7 +94,7 @@ function WelcomeScreen({ user, sidebarOpen, toggleSidebar }) {
         <p className="text-text-secondary max-w-sm animate-fade-in-up" style={{ animationDelay: "0.1s" }}>
           Select a channel from the sidebar to start chatting, or create a new project.
         </p>
-        <div className="flex gap-3 mt-8 animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
+        <div className="flex flex-wrap justify-center gap-3 mt-8 animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
           <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">⚡ Real-time chat</div>
           <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">🐍 Python execution</div>
           <div className="glass rounded-xl px-4 py-2.5 text-xs text-text-secondary">🔒 Private rooms</div>

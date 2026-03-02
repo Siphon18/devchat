@@ -32,7 +32,7 @@ export default function InboxModal({ onClose, onChange }) {
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in" onClick={onClose}>
-            <div className="glass-strong rounded-2xl p-6 w-[400px] animate-scale-in border border-white/[0.08]" onClick={e => e.stopPropagation()}>
+            <div className="glass-strong rounded-2xl p-6 w-[calc(100vw-2rem)] max-w-[400px] animate-scale-in border border-white/[0.08]" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-center mb-6">
                     <h3 className="text-xl font-bold text-white">Inbox</h3>
                     <button onClick={onClose} className="text-text-muted hover:text-white p-1 rounded-lg hover:bg-dc-hover">✕</button>

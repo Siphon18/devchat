@@ -78,7 +78,7 @@ export default function ManageMembersModal({ targetType, targetId, title, getMem
 
     return (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in" onClick={onClose}>
-            <div className="glass-strong rounded-2xl w-[500px] h-[600px] flex flex-col animate-scale-in border border-white/[0.08] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="glass-strong rounded-2xl w-[calc(100vw-2rem)] max-w-[500px] h-[calc(100vh-4rem)] max-h-[600px] flex flex-col animate-scale-in border border-white/[0.08] overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className="p-5 border-b border-white/[0.05] flex justify-between items-center bg-black/20">
                     <h3 className="text-xl font-bold text-white tracking-wide truncate">Manage {title}</h3>
                     <button onClick={onClose} className="text-text-muted hover:text-white p-1 rounded-lg hover:bg-dc-hover ml-4 flex-shrink-0">✕</button>

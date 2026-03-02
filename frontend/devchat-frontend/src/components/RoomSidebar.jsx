@@ -21,7 +21,7 @@ function getStableDiscriminator(username) {
     return disc;
 }
 
-const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, username, gender, activeRoomId }, ref) {
+const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onClose, username, gender, activeRoomId }, ref) {
     const [projects, setProjects] = useState([]);
     const [rooms, setRooms] = useState({});
     const [expandedProject, setExpandedProject] = useState(null);
@@ -195,6 +195,8 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, user
         }
         setSelectedRoomId(room.id);
         onRoomSelect({ ...room, projectName });
+        // Close sidebar on mobile after selecting a room
+        if (window.innerWidth < 768) onClose?.();
         // Mark room as read and clear its badge
         try {
             await markRoomRead(room.id);
@@ -227,11 +229,19 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, user
 
     return (
         <>
+            {/* Mobile overlay backdrop */}
+            {isOpen && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-30 md:hidden"
+                    onClick={() => onClose?.()}
+                />
+            )}
             <aside
                 ref={sidebarRef}
                 className={`
-          flex flex-col h-full bg-dc-sidebar border-r border-white/[0.05] relative
+          flex flex-col h-full bg-dc-sidebar border-r border-white/[0.05]
           transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden
+          md:relative fixed inset-y-0 left-0 z-40
           ${isOpen ? "w-72 opacity-100" : "w-0 opacity-0 border-none"}
         `}
             >
@@ -349,7 +359,7 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, user
                         </div>
 
                         {/* Quick Actions */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                             <button
                                 onClick={() => setShowDirectory(true)}
                                 className="text-text-muted hover:text-white p-1.5 rounded-lg hover:bg-dc-hover transition-all"
@@ -600,7 +610,7 @@ function ProfileSettingsModal({ user, onClose, onUpdate }) {
 
     return (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in" onClick={onClose}>
-            <div className="glass-strong rounded-2xl p-6 w-[360px] animate-scale-in border border-white/[0.08]" onClick={e => e.stopPropagation()}>
+            <div className="glass-strong rounded-2xl p-6 w-[calc(100vw-2rem)] max-w-[360px] animate-scale-in border border-white/[0.08]" onClick={e => e.stopPropagation()}>
                 <h3 className="text-xl font-bold text-white mb-1">My Profile</h3>
                 <p className="text-text-secondary text-xs mb-6">Customize how others see you in DevChat.</p>
 

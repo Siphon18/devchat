@@ -124,7 +124,7 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
       )}
 
       {/* Content */}
-      <div className={`flex flex-col max-w-[75%] relative ${isUser ? "items-end" : "items-start"}`}>
+      <div className={`flex flex-col max-w-[88%] sm:max-w-[75%] relative ${isUser ? "items-end" : "items-start"}`}>
         {/* Header row (display name + time) - username hidden for current user */}
         {!isGrouped && (
           <div className="flex items-baseline gap-2 mb-1">
