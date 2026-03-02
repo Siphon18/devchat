@@ -51,6 +51,9 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const recordMimeRef = useRef("audio/webm");
   const rafRef = useRef(0);
   const visualizerCanvasRef = useRef(null);
+  const smoothDataRef = useRef(new Float32Array(128));
+  const vizFrameRef = useRef(0);
+  const particlesRef = useRef([]);
 
   useEffect(() => {
     if (editingMessage) {
@@ -177,34 +180,144 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const { width, height } = canvas;
-    ctx.clearRect(0, 0, width, height);
+    const W = canvas.width;
+    const H = canvas.height;
+    const centerY = H / 2;
 
+    // Rounded bar helper
+    const roundedBar = (rx, ry, rw, rh, rr) => {
+      if (rh < 0.5) return;
+      const cr = Math.min(rr, rw / 2, Math.abs(rh) / 2);
+      ctx.beginPath();
+      ctx.moveTo(rx + cr, ry);
+      ctx.lineTo(rx + rw - cr, ry);
+      ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + cr);
+      ctx.lineTo(rx + rw, ry + rh - cr);
+      ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - cr, ry + rh);
+      ctx.lineTo(rx + cr, ry + rh);
+      ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - cr);
+      ctx.lineTo(rx, ry + cr);
+      ctx.quadraticCurveTo(rx, ry, rx + cr, ry);
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    ctx.clearRect(0, 0, W, H);
+
+    vizFrameRef.current += 1;
+    const time = vizFrameRef.current * 0.016;
+
+    // Get frequency data
     const freq = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(freq);
 
-    const gradient = ctx.createLinearGradient(0, 0, width, 0);
-    gradient.addColorStop(0, "rgba(88,101,242,0.95)");
-    gradient.addColorStop(0.5, "rgba(124,58,237,0.95)");
-    gradient.addColorStop(1, "rgba(6,182,212,0.95)");
-
-    const bars = 56;
-    const gap = 2;
-    const barW = Math.max(2, Math.floor((width - (bars - 1) * gap) / bars));
+    // Smooth interpolation for silky frame transitions
+    const smooth = smoothDataRef.current;
+    const bars = 72;
     const step = Math.max(1, Math.floor(freq.length / bars));
 
-    for (let i = 0; i < bars; i += 1) {
-      const v = freq[i * step] || 0;
-      const h = Math.max(6, Math.min(height - 2, Math.round((v / 255) * height * 0.9) + 6));
-      const x = i * (barW + gap);
-      const y = (height - h) / 2;
+    let avgVol = 0;
+    for (let i = 0; i < bars; i++) {
+      const raw = freq[i * step] / 255;
+      smooth[i] = smooth[i] * 0.72 + raw * 0.28;
+      avgVol += smooth[i];
+    }
+    avgVol /= bars;
 
-      ctx.fillStyle = gradient;
-      ctx.globalAlpha = 0.95;
-      ctx.fillRect(x, y, barW, h);
+    // ── Background radial pulse that breathes with audio energy ──
+    const pulseR = W * 0.3 + avgVol * W * 0.45;
+    const bgGlow = ctx.createRadialGradient(W / 2, centerY, 0, W / 2, centerY, pulseR);
+    bgGlow.addColorStop(0, `rgba(124, 58, 237, ${(0.06 + avgVol * 0.15).toFixed(3)})`);
+    bgGlow.addColorStop(0.5, `rgba(88, 101, 242, ${(0.03 + avgVol * 0.06).toFixed(3)})`);
+    bgGlow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bgGlow;
+    ctx.fillRect(0, 0, W, H);
+
+    // ── Floating particles that react to volume ──
+    const particles = particlesRef.current;
+    if (avgVol > 0.12 && particles.length < 45 && Math.random() < avgVol * 0.8) {
+      particles.push({
+        x: Math.random() * W,
+        y: centerY + (Math.random() - 0.5) * H * 0.8,
+        vx: (Math.random() - 0.5) * 1.2,
+        vy: -0.2 - Math.random() * 0.6,
+        r: 0.8 + Math.random() * 2.2,
+        life: 1,
+        decay: 0.006 + Math.random() * 0.014,
+        hue: 245 + Math.random() * 60
+      });
     }
 
-    ctx.globalAlpha = 1;
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= p.decay;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      const pa = p.life * 0.55;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * (0.5 + p.life * 0.5), 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${p.hue}, 85%, 72%, ${pa.toFixed(3)})`;
+      ctx.shadowColor = `hsla(${p.hue}, 85%, 65%, ${(pa * 0.7).toFixed(3)})`;
+      ctx.shadowBlur = 8;
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+
+    // ── Mirrored symmetric frequency bars ──
+    const gap = 2.5;
+    const barW = Math.max(2.2, (W - (bars - 1) * gap) / bars);
+    const maxBarH = centerY - 3;
+
+    for (let i = 0; i < bars; i++) {
+      const v = smooth[i];
+      const barH = Math.max(1.5, v * maxBarH);
+      const x = i * (barW + gap);
+
+      // Dynamic hue per bar with time-animated shift
+      const hue = 248 + (i / bars) * 55 + Math.sin(time * 0.7 + i * 0.1) * 12;
+      const sat = 78 + v * 22;
+      const lum = 56 + v * 20;
+      const alpha = 0.6 + v * 0.4;
+
+      // Intensify glow on louder bars
+      if (v > 0.18) {
+        ctx.shadowColor = `hsla(${hue}, ${sat}%, ${lum}%, ${(v * 0.55).toFixed(3)})`;
+        ctx.shadowBlur = 5 + v * 14;
+      } else {
+        ctx.shadowBlur = 0;
+      }
+
+      // Top half — bars extending upward from center
+      const gUp = ctx.createLinearGradient(x, centerY, x, centerY - barH);
+      gUp.addColorStop(0, `hsla(${hue}, ${sat}%, ${lum}%, ${alpha.toFixed(3)})`);
+      gUp.addColorStop(1, `hsla(${hue + 30}, ${sat - 10}%, ${lum + 14}%, ${(alpha * 0.45).toFixed(3)})`);
+      ctx.fillStyle = gUp;
+      roundedBar(x, centerY - barH, barW, barH, barW / 2);
+
+      // Bottom half — mirrored bars extending downward, slightly dimmer
+      const gDn = ctx.createLinearGradient(x, centerY, x, centerY + barH);
+      gDn.addColorStop(0, `hsla(${hue}, ${sat}%, ${lum}%, ${(alpha * 0.8).toFixed(3)})`);
+      gDn.addColorStop(1, `hsla(${hue + 30}, ${sat - 10}%, ${lum + 14}%, ${(alpha * 0.2).toFixed(3)})`);
+      ctx.fillStyle = gDn;
+      roundedBar(x, centerY, barW, barH, barW / 2);
+    }
+    ctx.shadowBlur = 0;
+
+    // ── Glowing center line ──
+    const lineA = 0.25 + avgVol * 0.55;
+    ctx.shadowColor = `rgba(167, 139, 250, ${(lineA * 0.8).toFixed(3)})`;
+    ctx.shadowBlur = 10;
+    const lineGrad = ctx.createLinearGradient(0, 0, W, 0);
+    lineGrad.addColorStop(0, "rgba(88,101,242,0)");
+    lineGrad.addColorStop(0.12, `rgba(124,58,237,${(lineA * 0.5).toFixed(3)})`);
+    lineGrad.addColorStop(0.5, `rgba(167,139,250,${lineA.toFixed(3)})`);
+    lineGrad.addColorStop(0.88, `rgba(6,182,212,${(lineA * 0.5).toFixed(3)})`);
+    lineGrad.addColorStop(1, "rgba(6,182,212,0)");
+    ctx.fillStyle = lineGrad;
+    ctx.fillRect(0, centerY - 1, W, 2);
+    ctx.shadowBlur = 0;
+
     rafRef.current = requestAnimationFrame(drawVisualizer);
   };
 
@@ -217,6 +330,9 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const cleanupRecorder = () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
+    vizFrameRef.current = 0;
+    smoothDataRef.current = new Float32Array(128);
+    particlesRef.current = [];
 
     if (audioCtxRef.current) {
       audioCtxRef.current.close().catch(() => {});
@@ -347,11 +463,12 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
               </span>
             </div>
 
-            <div className="relative rounded-xl bg-black/30 border border-white/[0.08] p-2">
+            <div className="relative rounded-xl bg-black/40 border border-white/[0.06] p-2 overflow-hidden">
               <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute -inset-4 bg-accent-purple/20 blur-2xl opacity-45" />
+                <div className="absolute -inset-6 bg-accent-purple/25 blur-3xl opacity-50 animate-pulse-slow" />
+                <div className="absolute -inset-8 bg-accent-cyan/10 blur-3xl opacity-30 animate-pulse-slow" style={{ animationDelay: "1.5s" }} />
               </div>
-              <canvas ref={visualizerCanvasRef} width={620} height={82} className="relative z-10 w-full h-20 rounded-lg" />
+              <canvas ref={visualizerCanvasRef} width={620} height={100} className="relative z-10 w-full h-24 rounded-xl" />
             </div>
 
             {recordError && <p className="text-rose-400 text-xs mt-2">{recordError}</p>}
@@ -496,7 +613,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading || !!editingMessage}
             title="Attach files"
-            className="w-8 h-8 rounded-lg bg-dc-hover text-text-secondary hover:text-white hover:bg-dc-active transition-all disabled:opacity-35"
+            className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.06] text-text-secondary hover:text-accent-cyan hover:bg-accent-cyan/10 hover:border-accent-cyan/25 active:scale-95 transition-all duration-200 disabled:opacity-35"
           >
             <PaperclipIcon className="w-4 h-4 mx-auto" />
           </button>
@@ -549,7 +666,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                     onClick={openRecorder}
                     disabled={uploading || recorderOpen}
                     title="Record voice note"
-                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/40 hover:scale-[1.04] transition-all disabled:opacity-35"
+                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
                   >
                     <MicIcon className="w-4 h-4 mx-auto" />
                   </button>
@@ -557,7 +674,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                   <button
                     onClick={handleSendText}
                     disabled={uploading || (!text.trim() && attachments.length === 0)}
-                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/40 hover:scale-[1.04] transition-all disabled:opacity-35"
+                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
                   >
                     <SendIcon className="w-4 h-4 mx-auto" />
                   </button>
@@ -580,10 +697,23 @@ function IconBase({ children, className = "w-4 h-4" }) {
 }
 
 function PaperclipIcon({ className }) {
-  return <IconBase className={className}><path d="M21.44 11.05 12.3 20.19a6 6 0 1 1-8.49-8.49l9.2-9.2a4 4 0 1 1 5.66 5.66l-9.2 9.2a2 2 0 1 1-2.83-2.83l8.49-8.48" /></IconBase>;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9.5" strokeWidth="1.4" opacity="0.45" />
+      <line x1="12" y1="8" x2="12" y2="16" strokeWidth="2" />
+      <line x1="8" y1="12" x2="16" y2="12" strokeWidth="2" />
+    </svg>
+  );
 }
 function MicIcon({ className }) {
-  return <IconBase className={className}><rect x="9" y="2.8" width="6" height="11.8" rx="3" /><path d="M5 10.5a7 7 0 0 0 14 0" /><path d="M12 18v3.2" /><path d="M8.5 21.2h7" /></IconBase>;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" fill="currentColor" opacity="0.15" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1" stroke="currentColor" strokeWidth="1.9" />
+      <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" strokeWidth="1.9" />
+      <line x1="8" y1="22" x2="16" y2="22" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
 }
 function SendIcon({ className }) {
   return <IconBase className={className}><path d="M3 11.8 20.2 3.5 14.1 20.5 10.8 13.2 3 11.8Z" /><path d="m10.8 13.2 9.4-9.7" /></IconBase>;
