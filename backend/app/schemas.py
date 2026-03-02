@@ -14,6 +14,8 @@ class UserResponse(BaseModel):
     gender: Optional[str]
     nickname: Optional[str] = None
     created_at: datetime
+    oauth_provider: Optional[str] = None
+    avatar_url: Optional[str] = None
     
     class Config:
         from_attributes = True

@@ -16,10 +16,13 @@ class User(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     username        = Column(String(50),  unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=True)  # nullable for OAuth users
     gender          = Column(String(20),  default="neutral")
     nickname        = Column(String(60),  nullable=True)   # auto-generated cool name
     created_at      = Column(DateTime(timezone=True), default=utcnow)
+    oauth_provider  = Column(String(20),  nullable=True)   # "github", "google", or None
+    oauth_id        = Column(String(255), nullable=True)   # provider's unique user ID
+    avatar_url      = Column(String(500), nullable=True)   # avatar from OAuth provider
 
     room_memberships = relationship(
         "RoomMember", back_populates="user", cascade="all, delete-orphan"

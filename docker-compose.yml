@@ -33,7 +33,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-devchat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}@postgres:5432/${POSTGRES_DB:-devchat}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your .env}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      FRONTEND_URL: ${FRONTEND_URL:-http://10.157.92.79}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
       ENABLE_DOCS: ${ENABLE_DOCS:-false}
       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
@@ -54,7 +54,7 @@ services:
     build:
       context: ./frontend/devchat-frontend
       args:
-        - VITE_API_URL=http://localhost:8000
+        - VITE_API_URL=http://10.157.92.79:8000
     restart: unless-stopped
     ports:
       - "80:80"

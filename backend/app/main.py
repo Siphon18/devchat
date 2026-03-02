@@ -3,11 +3,13 @@ import time
 from collections import defaultdict, deque
 from threading import Lock
 import uuid
+import secrets
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status, UploadFile, File, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import httpx
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
@@ -73,9 +75,16 @@ allowed_origins = [
     "http://localhost",
     "http://localhost:80",
     "http://127.0.0.1:8000",
+    "http://10.157.92.79",
+    "http://10.157.92.79:80",
 ]
 if frontend_url:
     allowed_origins.append(frontend_url)
+    # Also allow HTTPS variant
+    if frontend_url.startswith("http://"):
+        allowed_origins.append(frontend_url.replace("http://", "https://", 1))
+    elif frontend_url.startswith("https://"):
+        allowed_origins.append(frontend_url.replace("https://", "http://", 1))
 
 app.add_middleware(
     CORSMiddleware,
@@ -343,6 +352,202 @@ def update_nickname(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+# -------- OAUTH ROUTES --------
+
+# OAuth config from environment
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "").strip()
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "").strip()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+
+# In-memory state store for CSRF protection (use Redis in production)
+_oauth_states: dict[str, float] = {}
+
+
+def _cleanup_expired_states():
+    """Remove OAuth states older than 10 minutes."""
+    cutoff = time.time() - 600
+    expired = [k for k, v in _oauth_states.items() if v < cutoff]
+    for k in expired:
+        _oauth_states.pop(k, None)
+
+
+@app.get("/oauth/github")
+def oauth_github_redirect():
+    """Redirect user to GitHub OAuth authorization page."""
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(400, "GitHub OAuth is not configured")
+    _cleanup_expired_states()
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = time.time()
+    params = urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "scope": "read:user user:email",
+        "state": state,
+        "redirect_uri": f"{frontend_url}/oauth/callback" if frontend_url else "",
+    })
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}")
+
+
+@app.post("/oauth/github/callback")
+async def oauth_github_callback(body: dict, db: Session = Depends(get_db)):
+    """Exchange GitHub code for token, create/login user, return JWT."""
+    code = body.get("code", "").strip()
+    state = body.get("state", "").strip()
+    if not code:
+        raise HTTPException(400, "Missing authorization code")
+    if state not in _oauth_states:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+    _oauth_states.pop(state, None)
+
+    # Exchange code for access token
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://github.com/login/oauth/access_token",
+            json={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+            },
+            headers={"Accept": "application/json"},
+        )
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(400, f"GitHub OAuth failed: {token_data.get('error_description', 'unknown error')}")
+
+        # Get user info
+        user_resp = await client.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        )
+        gh_user = user_resp.json()
+        gh_id = str(gh_user.get("id", ""))
+        gh_login = gh_user.get("login", "")
+        gh_avatar = gh_user.get("avatar_url", "")
+
+        # Get primary email
+        email_resp = await client.get(
+            "https://api.github.com/user/emails",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        )
+        emails = email_resp.json()
+        primary_email = next((e["email"] for e in emails if e.get("primary")), None) if isinstance(emails, list) else None
+
+    return _oauth_upsert_user(db, provider="github", oauth_id=gh_id,
+                              username_hint=gh_login, avatar_url=gh_avatar, email=primary_email)
+
+
+@app.get("/oauth/google")
+def oauth_google_redirect():
+    """Redirect user to Google OAuth authorization page."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(400, "Google OAuth is not configured")
+    _cleanup_expired_states()
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = time.time()
+    params = urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": f"{frontend_url}/oauth/callback" if frontend_url else "",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "select_account",
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+
+
+@app.post("/oauth/google/callback")
+async def oauth_google_callback(body: dict, db: Session = Depends(get_db)):
+    """Exchange Google code for token, create/login user, return JWT."""
+    code = body.get("code", "").strip()
+    state = body.get("state", "").strip()
+    if not code:
+        raise HTTPException(400, "Missing authorization code")
+    if state not in _oauth_states:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+    _oauth_states.pop(state, None)
+
+    redirect_uri = f"{frontend_url}/oauth/callback" if frontend_url else ""
+
+    async with httpx.AsyncClient() as client:
+        # Exchange code for tokens
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+        )
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(400, f"Google OAuth failed: {token_data.get('error_description', 'unknown error')}")
+
+        # Get user info
+        user_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        g_user = user_resp.json()
+        g_id = str(g_user.get("id", ""))
+        g_name = g_user.get("name", "").replace(" ", "_")[:50] or g_user.get("email", "").split("@")[0][:50]
+        g_avatar = g_user.get("picture", "")
+        g_email = g_user.get("email", "")
+
+    return _oauth_upsert_user(db, provider="google", oauth_id=g_id,
+                              username_hint=g_name, avatar_url=g_avatar, email=g_email)
+
+
+def _oauth_upsert_user(db: Session, *, provider: str, oauth_id: str,
+                       username_hint: str, avatar_url: str, email: str | None):
+    """Find or create a user from OAuth, return JWT."""
+    from app.nicknames import generate_nickname
+
+    # 1. Try to find by oauth_provider + oauth_id
+    user = db.query(models.User).filter(
+        models.User.oauth_provider == provider,
+        models.User.oauth_id == oauth_id,
+    ).first()
+
+    if user:
+        # Update avatar if changed
+        if avatar_url and user.avatar_url != avatar_url:
+            user.avatar_url = avatar_url
+            db.commit()
+        access_token = auth.create_access_token(data={"sub": user.username})
+        return {"access_token": access_token, "token_type": "bearer", "is_new": False}
+
+    # 2. Create new user — ensure unique username
+    base_username = username_hint[:45] or "user"
+    username = base_username
+    suffix = 0
+    while db.query(models.User).filter(models.User.username == username).first():
+        suffix += 1
+        username = f"{base_username}_{suffix}"
+
+    new_user = models.User(
+        username=username,
+        hashed_password=None,
+        gender="neutral",
+        nickname=generate_nickname(),
+        oauth_provider=provider,
+        oauth_id=oauth_id,
+        avatar_url=avatar_url,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    access_token = auth.create_access_token(data={"sub": new_user.username})
+    return {"access_token": access_token, "token_type": "bearer", "is_new": True}
+
 
 # -------------------- ROOM ROUTES --------------------
 

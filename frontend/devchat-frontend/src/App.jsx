@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-d
 import ChatWindow from "./components/ChatWindow";
 import RoomSidebar from "./components/RoomSidebar";
 import LoginPage from "./pages/LoginPage";
+import OAuthCallback from "./pages/OAuthCallback";
 import LandingPage from "./pages/LandingPage";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { getAvatarUrl } from "./utils/avatar";
@@ -122,6 +123,7 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/oauth/callback" element={<OAuthCallback />} />
           <Route
             path="/app"
             element={
