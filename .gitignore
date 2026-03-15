@@ -14,6 +14,7 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.wrangler/
 
 # Docker
 .docker/
@@ -21,6 +22,7 @@ docker-compose.override.yml
 
 # Databases
 *.db
+*.sql
 
 # Build / lint artifacts
 *.log
