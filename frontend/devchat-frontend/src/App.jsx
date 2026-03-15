@@ -6,7 +6,9 @@ import LoginPage from "./pages/LoginPage";
 import OAuthCallback from "./pages/OAuthCallback";
 import LandingPage from "./pages/LandingPage";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ToastProvider } from "./components/Toast";
 import { getAvatarUrl } from "./utils/avatar";
+import { BrandMark } from "./components/BrandMark";
 
 function ProtectedRoute({ children }) {
   const { token, loading } = useAuth();
@@ -18,7 +20,7 @@ function ProtectedRoute({ children }) {
 function ChatLayout() {
   const [selectedRoom, setSelectedRoom] = useState(null);
   const { user } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const sidebarRef = useRef(null);
 
   if (!user) return <PageLoader />;
@@ -108,9 +110,17 @@ function WelcomeScreen({ user, sidebarOpen, toggleSidebar }) {
 function PageLoader() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-dc-bg">
-      <div className="flex flex-col items-center gap-4">
-        <div className="w-12 h-12 rounded-xl gradient-animated flex items-center justify-center text-white font-black text-lg animate-pulse-slow">DC</div>
-        <div className="text-text-muted text-sm">Loading...</div>
+      {/* Subtle background glow */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="orb w-96 h-96 bg-[#5865F2] top-1/3 left-1/3 opacity-[0.06]" />
+      </div>
+        <div className="flex flex-col items-center gap-4 relative z-10">
+        <BrandMark className="h-14 w-14 animate-pulse-slow" />
+        <div className="flex items-center gap-2">
+          <div className="typing-dot" style={{ background: '#5865F2' }}></div>
+          <div className="typing-dot" style={{ background: '#7c3aed', animationDelay: '0.15s' }}></div>
+          <div className="typing-dot" style={{ background: '#06b6d4', animationDelay: '0.3s' }}></div>
+        </div>
       </div>
     </div>
   );
@@ -119,23 +129,25 @@ function PageLoader() {
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/oauth/callback" element={<OAuthCallback />} />
-          <Route
-            path="/app"
-            element={
-              <ProtectedRoute>
-                <ChatLayout />
-              </ProtectedRoute>
-            }
-          />
-          {/* Legacy redirect */}
-          <Route path="/*" element={<Navigate to="/" />} />
-        </Routes>
-      </Router>
+      <ToastProvider>
+        <Router>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/oauth/callback" element={<OAuthCallback />} />
+            <Route
+              path="/app"
+              element={
+                <ProtectedRoute>
+                  <ChatLayout />
+                </ProtectedRoute>
+              }
+            />
+            {/* Legacy redirect */}
+            <Route path="/*" element={<Navigate to="/" />} />
+          </Routes>
+        </Router>
+      </ToastProvider>
     </AuthProvider>
   );
 }

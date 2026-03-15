@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { BrandMark, BrandWordmark } from "../components/BrandMark";
 
 const apiBase = () => import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -133,8 +134,8 @@ export default function LoginPage() {
 
                 <div className="relative z-10 text-center max-w-sm">
                     {/* Logo mark */}
-                    <div className="w-20 h-20 rounded-2xl gradient-animated flex items-center justify-center text-white font-black text-3xl shadow-2xl mx-auto mb-8 animate-float">
-                        DC
+                    <div className="mx-auto mb-8 flex justify-center animate-float">
+                        <BrandMark className="h-20 w-20 rounded-2xl" />
                     </div>
 
                     <h2 className="text-4xl font-black mb-4 leading-tight">
@@ -175,8 +176,9 @@ export default function LoginPage() {
                     {/* Header */}
                     <div className="mb-8">
                         <div className="flex items-center gap-2.5 mb-6">
-                            <div className="w-9 h-9 rounded-xl gradient-animated flex items-center justify-center text-white font-black text-sm lg:hidden">DC</div>
-                            <span className="font-bold text-lg text-white lg:hidden">DevChat</span>
+                            <div className="lg:hidden">
+                                <BrandWordmark markClassName="h-9 w-9" textClassName="text-lg" />
+                            </div>
                         </div>
                         <h1 className="text-3xl font-black text-white mb-2">
                             {isRegistering ? "Create account" : "Welcome back"}
@@ -198,10 +200,12 @@ export default function LoginPage() {
                     <form onSubmit={handleSubmit} className="space-y-5">
                         {/* Username */}
                         <div>
-                            <label className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                            <label htmlFor="username" className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
                                 Username
                             </label>
                             <input
+                                id="username"
+                                name="username"
                                 type="text"
                                 value={username}
                                 onChange={(e) => { setUsername(e.target.value); setFieldErrors(fe => ({ ...fe, username: "" })); }}
@@ -216,11 +220,13 @@ export default function LoginPage() {
 
                         {/* Password */}
                         <div>
-                            <label className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                            <label htmlFor="password" className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
                                 Password
                             </label>
                             <div className="relative">
                                 <input
+                                    id="password"
+                                    name="password"
                                     type={showPassword ? "text" : "password"}
                                     value={password}
                                     onChange={(e) => { setPassword(e.target.value); setFieldErrors(fe => ({ ...fe, password: "" })); }}

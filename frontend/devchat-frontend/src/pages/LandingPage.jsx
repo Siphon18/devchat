@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { BrandMark, BrandWordmark } from "../components/BrandMark";
 
 const FEATURES = [
     {
@@ -94,12 +95,7 @@ export default function LandingPage() {
                 <div className="max-w-6xl mx-auto px-6 flex items-center justify-between">
                     {/* Logo */}
                     <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
-                        <div className="w-9 h-9 rounded-xl gradient-animated flex items-center justify-center text-white font-black text-sm shadow-lg">
-                            DC
-                        </div>
-                        <span className="font-bold text-lg tracking-tight text-white">
-                            Dev<span className="gradient-text">Chat</span>
-                        </span>
+                        <BrandWordmark markClassName="h-9 w-9" textClassName="text-lg" />
                     </div>
 
                     {/* Nav links */}
@@ -328,7 +324,7 @@ export default function LandingPage() {
             <footer className="border-t border-white/[0.05] py-10 px-6">
                 <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 text-text-muted text-sm">
                     <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-lg gradient-animated flex items-center justify-center text-white font-black text-xs">DC</div>
+                        <BrandMark className="h-7 w-7 rounded-lg" />
                         <span>DevChat — built for developers</span>
                     </div>
                     <div className="flex gap-6">

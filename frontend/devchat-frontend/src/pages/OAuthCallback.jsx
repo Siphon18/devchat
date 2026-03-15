@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { BrandMark } from "../components/BrandMark";
 
 const apiBase = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -9,8 +10,11 @@ export default function OAuthCallback() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const [error, setError] = useState("");
+    const processed = useRef(false);
 
     useEffect(() => {
+        if (processed.current) return;
+
         const code = searchParams.get("code");
         const state = searchParams.get("state");
         const provider = localStorage.getItem("oauth_provider");
@@ -19,6 +23,8 @@ export default function OAuthCallback() {
             setError("Missing authorization code or provider info.");
             return;
         }
+
+        processed.current = true;
 
         (async () => {
             try {
@@ -34,6 +40,7 @@ export default function OAuthCallback() {
                 login(data.access_token);
                 navigate("/app");
             } catch (err) {
+                processed.current = false;
                 setError(err.message);
             }
         })();
@@ -55,7 +62,7 @@ export default function OAuthCallback() {
                     </div>
                 ) : (
                     <>
-                        <div className="w-12 h-12 rounded-xl gradient-animated flex items-center justify-center text-white font-black text-lg animate-pulse-slow">DC</div>
+                        <BrandMark className="h-12 w-12 animate-pulse-slow" />
                         <div className="text-text-muted text-sm">Signing you in...</div>
                     </>
                 )}
