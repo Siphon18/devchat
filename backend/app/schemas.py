@@ -1,12 +1,40 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
+import re
 
 # --- Auth Schemas ---
 class UserCreate(BaseModel):
-    username: str
-    password: str
+    username: str = Field(..., min_length=3, max_length=50)
+    email: Optional[str] = Field(default=None, max_length=255)
+    password: str = Field(..., min_length=6, max_length=128)
     gender: Optional[str] = "neutral"
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9_]+$", v):
+            raise ValueError("Username must contain only letters, numbers, and underscores")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v.strip()) < 6:
+            raise ValueError("Password must be at least 6 characters")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip().lower()
+        if not value:
+            return None
+        if len(value) > 255 or "@" not in value or "." not in value.split("@")[-1]:
+            raise ValueError("Please enter a valid email address")
+        return value
 
 class UserResponse(BaseModel):
     id: int
@@ -67,6 +95,7 @@ class MessageCreate(BaseModel):
     type: str  # "text" or "code"
     language: Optional[str] = None
     content: str
+    stdin: Optional[str] = None  # pre-filled stdin for input() calls
     reply_to_id: Optional[int] = None
     attachments: Optional[list["AttachmentUploadResponse"]] = []
 
@@ -153,6 +182,7 @@ class AccessRequestResponse(BaseModel):
     user_id: int
     username: Optional[str] = None
     target_id: int
+    target_name: Optional[str] = None
     target_type: str
     status: str
     created_at: datetime

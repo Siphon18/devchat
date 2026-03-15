@@ -16,6 +16,7 @@ class User(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     username        = Column(String(50),  unique=True, index=True, nullable=False)
+    email           = Column(String(255), unique=True, index=True, nullable=True)
     hashed_password = Column(String(255), nullable=True)  # nullable for OAuth users
     gender          = Column(String(20),  default="neutral")
     nickname        = Column(String(60),  nullable=True)   # auto-generated cool name

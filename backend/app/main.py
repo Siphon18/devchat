@@ -1,12 +1,14 @@
 import os
 import time
+import asyncio
+import logging
 from collections import defaultdict, deque
 from threading import Lock
 import uuid
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse, urlencode
-from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status, UploadFile, File, Request
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status, UploadFile, File, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import httpx
@@ -16,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from app.database import Base, engine, SessionLocal
 from app import models, schemas, auth
+from app.mailer import send_welcome_email_safe
 from app.executor import execute_python
 from app.websocket import manager
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,8 +78,6 @@ allowed_origins = [
     "http://localhost",
     "http://localhost:80",
     "http://127.0.0.1:8000",
-    "http://10.157.92.79",
-    "http://10.157.92.79:80",
 ]
 if frontend_url:
     allowed_origins.append(frontend_url)
@@ -140,6 +141,12 @@ async def apply_rate_limit(request: Request, call_next):
                 headers={"Retry-After": str(retry_after)},
             )
         q.append(now)
+
+        # Periodically prune empty rate-limit buckets to prevent memory leak
+        if len(_rate_state) > 500:
+            empty_keys = [k for k, v in _rate_state.items() if not v]
+            for k in empty_keys:
+                del _rate_state[k]
 
     return await call_next(request)
 
@@ -301,15 +308,24 @@ def persist_message_attachments(db: Session, message_id: int, attachments: list[
 # -------- AUTH ROUTES --------
 
 @app.post("/register", response_model=schemas.UserResponse)
-def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+def register(
+    user: schemas.UserCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     from app.nicknames import generate_nickname
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
+    if user.email:
+        existing_email = db.query(models.User).filter(models.User.email == user.email).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = auth.get_password_hash(user.password)
     new_user = models.User(
-        username=user.username, 
+        username=user.username,
+        email=user.email,
         hashed_password=hashed_password,
         gender=user.gender,
         nickname=generate_nickname(),
@@ -317,6 +333,8 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    if new_user.email:
+        background_tasks.add_task(send_welcome_email_safe, new_user.email, new_user.username)
     return new_user
 
 
@@ -392,7 +410,11 @@ def oauth_github_redirect():
 
 
 @app.post("/oauth/github/callback")
-async def oauth_github_callback(body: dict, db: Session = Depends(get_db)):
+async def oauth_github_callback(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Exchange GitHub code for token, create/login user, return JWT."""
     code = body.get("code", "").strip()
     state = body.get("state", "").strip()
@@ -436,7 +458,7 @@ async def oauth_github_callback(body: dict, db: Session = Depends(get_db)):
         emails = email_resp.json()
         primary_email = next((e["email"] for e in emails if e.get("primary")), None) if isinstance(emails, list) else None
 
-    return _oauth_upsert_user(db, provider="github", oauth_id=gh_id,
+    return _oauth_upsert_user(db, background_tasks=background_tasks, provider="github", oauth_id=gh_id,
                               username_hint=gh_login, avatar_url=gh_avatar, email=primary_email)
 
 
@@ -461,7 +483,11 @@ def oauth_google_redirect():
 
 
 @app.post("/oauth/google/callback")
-async def oauth_google_callback(body: dict, db: Session = Depends(get_db)):
+async def oauth_google_callback(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Exchange Google code for token, create/login user, return JWT."""
     code = body.get("code", "").strip()
     state = body.get("state", "").strip()
@@ -501,11 +527,11 @@ async def oauth_google_callback(body: dict, db: Session = Depends(get_db)):
         g_avatar = g_user.get("picture", "")
         g_email = g_user.get("email", "")
 
-    return _oauth_upsert_user(db, provider="google", oauth_id=g_id,
+    return _oauth_upsert_user(db, background_tasks=background_tasks, provider="google", oauth_id=g_id,
                               username_hint=g_name, avatar_url=g_avatar, email=g_email)
 
 
-def _oauth_upsert_user(db: Session, *, provider: str, oauth_id: str,
+def _oauth_upsert_user(db: Session, *, background_tasks: BackgroundTasks, provider: str, oauth_id: str,
                        username_hint: str, avatar_url: str, email: str | None):
     """Find or create a user from OAuth, return JWT."""
     from app.nicknames import generate_nickname
@@ -518,8 +544,20 @@ def _oauth_upsert_user(db: Session, *, provider: str, oauth_id: str,
 
     if user:
         # Update avatar if changed
+        changed = False
         if avatar_url and user.avatar_url != avatar_url:
             user.avatar_url = avatar_url
+            changed = True
+        normalized_email = email.strip().lower() if email else None
+        if normalized_email and user.email != normalized_email:
+            email_owner = db.query(models.User).filter(
+                models.User.email == normalized_email,
+                models.User.id != user.id,
+            ).first()
+            if not email_owner:
+                user.email = normalized_email
+                changed = True
+        if changed:
             db.commit()
         access_token = auth.create_access_token(data={"sub": user.username})
         return {"access_token": access_token, "token_type": "bearer", "is_new": False}
@@ -534,6 +572,7 @@ def _oauth_upsert_user(db: Session, *, provider: str, oauth_id: str,
 
     new_user = models.User(
         username=username,
+        email=email.strip().lower() if email else None,
         hashed_password=None,
         gender="neutral",
         nickname=generate_nickname(),
@@ -544,6 +583,8 @@ def _oauth_upsert_user(db: Session, *, provider: str, oauth_id: str,
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    if new_user.email:
+        background_tasks.add_task(send_welcome_email_safe, new_user.email, new_user.username)
 
     access_token = auth.create_access_token(data={"sub": new_user.username})
     return {"access_token": access_token, "token_type": "bearer", "is_new": True}
@@ -556,8 +597,10 @@ def get_discoverable_projects(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Fetch all projects
-    all_projects = db.query(models.Project).all()
+    # Fetch only public projects (not all projects — that would leak private ones)
+    public_projects = db.query(models.Project).filter(
+        models.Project.is_public == True
+    ).all()
     
     # Filter out projects the user is already a member of
     user_memberships = db.query(models.ProjectMember.project_id).filter(
@@ -566,7 +609,7 @@ def get_discoverable_projects(
     ).all()
     user_project_ids = {m[0] for m in user_memberships}
     
-    available_projects = [p for p in all_projects if p.id not in user_project_ids]
+    available_projects = [p for p in public_projects if p.id not in user_project_ids]
     return available_projects
 
 @app.post("/projects/{project_id}/join")
@@ -605,7 +648,8 @@ def join_public_project(
     db.commit()
     return {"status": "joined", "project_id": project_id}
 
-Base.metadata.create_all(bind=engine)
+# NOTE: Table creation is managed by Alembic migrations (see entrypoint.sh).
+# Do NOT use Base.metadata.create_all() here — it conflicts with migration history.
 
 
 
@@ -662,10 +706,12 @@ def search_users(q: str, db: Session = Depends(get_db), current_user: models.Use
     if not q or len(q) < 2:
         return []
     
+    # Escape SQL LIKE wildcards to prevent wildcard injection
+    safe_q = q.replace("%", "\\%").replace("_", "\\_")
     users = db.query(models.User).filter(
         or_(
-            models.User.username.ilike(f"%{q}%"),
-            models.User.nickname.ilike(f"%{q}%")
+            models.User.username.ilike(f"%{safe_q}%"),
+            models.User.nickname.ilike(f"%{safe_q}%")
         )
     ).limit(20).all()
     return users
@@ -856,6 +902,18 @@ def mark_room_read(
     db.commit()
     return {"status": "ok"}
 
+@app.patch("/projects/{project_id}/visibility")
+def toggle_project_visibility(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the project owner can change visibility")
+    project.is_public = not project.is_public
+    db.commit()
+    db.refresh(project)
+    return {"id": project.id, "name": project.name, "is_public": project.is_public}
+
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
@@ -882,10 +940,51 @@ def delete_room(room_id: int, db: Session = Depends(get_db), current_user: model
     db.commit()
     return {"status": "deleted", "id": room_id}
 
+
+@app.post("/seed-defaults")
+def seed_default_projects(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """Create default learning projects and channels owned by the current user."""
+    defaults = {
+        "Python Basics": ["general", "help", "exercises", "resources", "show-your-code"],
+        "Web Development": ["general", "html-css", "javascript", "react", "backend", "resources"],
+        "Data Science": ["general", "python-data", "visualization", "ml-basics", "datasets", "help"],
+        "Algorithms & DSA": ["general", "arrays-strings", "trees-graphs", "dynamic-programming", "help", "daily-challenge"],
+        "DevOps & Cloud": ["general", "docker", "ci-cd", "cloud-platforms", "linux", "resources"],
+    }
+    created = []
+    for proj_name, channels in defaults.items():
+        existing = db.query(models.Project).filter(models.Project.name == proj_name).first()
+        if existing:
+            continue  # skip if already exists
+        project = models.Project(name=proj_name, owner_id=current_user.id, is_public=True)
+        db.add(project)
+        db.flush()  # get project.id
+        # Add owner as admin member
+        db.add(models.ProjectMember(user_id=current_user.id, project_id=project.id, role="admin", status="joined"))
+        for ch_name in channels:
+            room = models.Room(name=ch_name, project_id=project.id, creator_id=current_user.id, is_private=False)
+            db.add(room)
+            db.flush()
+            db.add(models.RoomMember(user_id=current_user.id, room_id=room.id, role="admin", status="joined"))
+        created.append(proj_name)
+    db.commit()
+    return {"status": "ok", "created": created, "skipped": len(defaults) - len(created)}
+
+
 # -------- MESSAGES --------
+
+ALLOWED_MESSAGE_TYPES = {"text", "code"}
+ALLOWED_CODE_LANGUAGES = {"python"}
+
 
 @app.post("/messages")
 def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Validate message type and language
+    if message.type not in ALLOWED_MESSAGE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid message type. Must be one of: {', '.join(ALLOWED_MESSAGE_TYPES)}")
+    if message.type == "code" and message.language and message.language not in ALLOWED_CODE_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language. Must be one of: {', '.join(ALLOWED_CODE_LANGUAGES)}")
+
     require_room_access(db, message.room_id, current_user.id)
     db_message = models.Message(
         room_id=message.room_id,
@@ -910,7 +1009,7 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
     execution_result = None
 
     if message.type == "code" and message.language == "python":
-        execution_result = execute_python(message.content)  
+        execution_result = execute_python(message.content, stdin_text=message.stdin or "")  
 
     if execution_result:
         exec_entry = CodeExecution(
@@ -934,8 +1033,18 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
     }
 
 @app.get("/messages/{room_id}")
-def get_messages(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def get_messages(
+    room_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     require_room_access(db, room_id, current_user.id)
+    # Clamp limit to a reasonable maximum
+    limit = min(max(1, limit), 500)
+    offset = max(0, offset)
+
     # Check if user has cleared this chat recently
     member = db.query(models.RoomMember).filter(
         models.RoomMember.room_id == room_id,
@@ -948,7 +1057,7 @@ def get_messages(room_id: int, db: Session = Depends(get_db), current_user: mode
     if member and member.cleared_at:
         query = query.filter(models.Message.timestamp > member.cleared_at)
         
-    messages = query.order_by(models.Message.timestamp.asc()).all()
+    messages = query.order_by(models.Message.timestamp.asc()).offset(offset).limit(limit).all()
 
     response = []
     for m in messages:
@@ -1004,6 +1113,18 @@ async def delete_message(message_id: int, db: Session = Depends(get_db), current
     require_room_access(db, msg.room_id, current_user.id)
     if msg.sender != current_user.username:
         raise HTTPException(status_code=403, detail="You can only delete your own messages")
+
+    # Clean up attachment files from disk
+    attachments = db.query(models.MessageAttachment).filter(
+        models.MessageAttachment.message_id == message_id
+    ).all()
+    for att in attachments:
+        try:
+            file_path = (UPLOAD_DIR / Path(att.url).name).resolve()
+            if file_path.parent == UPLOAD_DIR and file_path.exists():
+                file_path.unlink()
+        except Exception:
+            pass  # Best-effort cleanup
 
     msg.is_deleted = True
     # We clear the content to save space and ensure privacy, while keeping the record
@@ -1127,13 +1248,76 @@ def get_my_invites(db: Session = Depends(get_db), current_user: models.User = De
     return invites
 
 
+@app.get("/requests/incoming")
+def get_incoming_requests(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """Get all pending access requests for projects/rooms the current user is admin of."""
+    # Find project IDs where user is owner
+    owned_projects = db.query(models.Project.id).filter(models.Project.owner_id == current_user.id).all()
+    owned_project_ids = [p[0] for p in owned_projects]
+
+    # Find room IDs in those projects
+    owned_room_ids = []
+    if owned_project_ids:
+        owned_rooms = db.query(models.Room.id).filter(models.Room.project_id.in_(owned_project_ids)).all()
+        owned_room_ids = [r[0] for r in owned_rooms]
+
+    # Fetch pending access requests for those targets
+    filters = []
+    if owned_project_ids:
+        filters.append(
+            (models.AccessRequest.target_type == "project") & (models.AccessRequest.target_id.in_(owned_project_ids))
+        )
+    if owned_room_ids:
+        filters.append(
+            (models.AccessRequest.target_type == "room") & (models.AccessRequest.target_id.in_(owned_room_ids))
+        )
+    if not filters:
+        return []
+
+    reqs = db.query(models.AccessRequest).filter(
+        models.AccessRequest.status == "pending",
+        or_(*filters)
+    ).all()
+
+    # Populate display info
+    for r in reqs:
+        r.username = r.user.username if r.user else "Unknown"
+        if r.target_type == "room":
+            room = db.query(models.Room).filter(models.Room.id == r.target_id).first()
+            r.target_name = room.name if room else f"Room {r.target_id}"
+        elif r.target_type == "project":
+            proj = db.query(models.Project).filter(models.Project.id == r.target_id).first()
+            r.target_name = proj.name if proj else f"Project {r.target_id}"
+    return reqs
+
+
 @app.get("/invites/me/count")
 def get_my_invite_count(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    count = db.query(models.Invite).filter(
+    invite_count = db.query(models.Invite).filter(
         models.Invite.invitee_id == current_user.id,
         models.Invite.status == "pending"
     ).count()
-    return {"count": count}
+
+    # Also count incoming access requests for admin's projects/rooms
+    owned_projects = db.query(models.Project.id).filter(models.Project.owner_id == current_user.id).all()
+    owned_project_ids = [p[0] for p in owned_projects]
+    request_count = 0
+    if owned_project_ids:
+        owned_rooms = db.query(models.Room.id).filter(models.Room.project_id.in_(owned_project_ids)).all()
+        owned_room_ids = [r[0] for r in owned_rooms]
+        filters = [
+            (models.AccessRequest.target_type == "project") & (models.AccessRequest.target_id.in_(owned_project_ids))
+        ]
+        if owned_room_ids:
+            filters.append(
+                (models.AccessRequest.target_type == "room") & (models.AccessRequest.target_id.in_(owned_room_ids))
+            )
+        request_count = db.query(models.AccessRequest).filter(
+            models.AccessRequest.status == "pending",
+            or_(*filters)
+        ).count()
+
+    return {"count": invite_count + request_count}
 
 
 class InviteAction(_PydanticBaseModel):
@@ -1548,7 +1732,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                     msg_response_dict["reply_to"] = jsonable_encoder(schemas.MessageResponse.from_orm(db_message.reply_to))
                     msg_response_dict["reply_to"].pop("reply_to", None)
 
-                # First broadcast: RUNNING state
                 # Always broadcast the message first
                 base_payload = {
                     "message": msg_response_dict,
@@ -1557,7 +1740,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
 
                 await manager.broadcast(room_id, base_payload)
 
-                # Second broadcast: EXECUTION state
+                # Code execution (non-blocking via asyncio.to_thread)
                 if msg_type == "code" and data.get("language") == "python":
 
                     # 1. Send running state
@@ -1569,8 +1752,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                     }
                     await manager.broadcast(room_id, running_payload)
 
-                    # 2. Execute code
-                    execution_result = execute_python(content)
+                    # 2. Execute code in a thread to avoid blocking the event loop
+                    stdin_text = data.get("stdin") or ""
+                    execution_result = await asyncio.to_thread(execute_python, content, stdin_text=stdin_text)
 
                     exec_entry = CodeExecution(
                         message_id=db_message.id,
@@ -1598,6 +1782,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
 
                     await manager.broadcast(room_id, final_payload)
 
+            except Exception as exc:
+                logging.exception("Error processing WebSocket message in room %s: %s", room_id, exc)
+                # Continue the loop — don't kill the connection on a single bad message
             finally:
                 db.close()
 
@@ -1608,15 +1795,3 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
             "type": "presence",
             "online": manager.get_online_users(room_id)
         })
-
-
-
-
-
-
-
-
-
-
-
-

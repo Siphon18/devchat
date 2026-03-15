@@ -31,6 +31,7 @@ export default function LoginPage() {
 
     const [isRegistering, setIsRegistering] = useState(searchParams.get("register") === "1");
     const [username, setUsername] = useState("");
+    const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [gender, setGender] = useState("neutral");
     const [showPassword, setShowPassword] = useState(false);
@@ -49,6 +50,10 @@ export default function LoginPage() {
         const errs = {};
         if (!username.trim()) errs.username = "Username is required";
         if (username.length > 50) errs.username = "Max 50 characters";
+        if (isRegistering && !email.trim()) errs.email = "Email is required";
+        if (isRegistering && email.trim() && (!email.includes("@") || !email.split("@")[1]?.includes("."))) {
+            errs.email = "Enter a valid email address";
+        }
         if (!password) errs.password = "Password is required";
         if (isRegistering && password.length < 6) errs.password = "Min 6 characters";
         setFieldErrors(errs);
@@ -80,7 +85,7 @@ export default function LoginPage() {
                 const res = await fetch(`${apiBase()}/register`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username: username.trim(), password, gender }),
+                    body: JSON.stringify({ username: username.trim(), email: email.trim(), password, gender }),
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || "Registration failed");
@@ -217,6 +222,30 @@ export default function LoginPage() {
                                 <p className="text-rose-400 text-xs mt-1.5">{fieldErrors.username}</p>
                             )}
                         </div>
+
+                        {isRegistering && (
+                            <div className="animate-fade-in-up">
+                                <label htmlFor="email" className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                                    Email
+                                </label>
+                                <input
+                                    id="email"
+                                    name="email"
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => { setEmail(e.target.value); setFieldErrors(fe => ({ ...fe, email: "" })); }}
+                                    placeholder="you@company.com"
+                                    autoComplete="email"
+                                    className={`input-field ${fieldErrors.email ? "error" : ""}`}
+                                />
+                                {fieldErrors.email && (
+                                    <p className="text-rose-400 text-xs mt-1.5">{fieldErrors.email}</p>
+                                )}
+                                <p className="text-text-muted text-xs mt-1.5">
+                                    We&apos;ll use this to send your welcome email.
+                                </p>
+                            </div>
+                        )}
 
                         {/* Password */}
                         <div>
