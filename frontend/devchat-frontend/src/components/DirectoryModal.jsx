@@ -22,16 +22,16 @@ export default function DirectoryModal({ onClose }) {
             } finally {
                 setSearching(false);
             }
-        }, 400); // debounce
+        }, 400);
         return () => clearTimeout(delay);
     }, [query]);
 
     return (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] animate-fade-in" onClick={onClose}>
-            <div className="glass-strong rounded-2xl p-6 w-[calc(100vw-2rem)] max-w-[450px] animate-scale-in border border-white/[0.08]" onClick={e => e.stopPropagation()}>
+            <div className="glass-panel rounded-2xl p-6 w-[calc(100vw-2rem)] max-w-[450px] animate-scale-in" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-center mb-4">
                     <h3 className="text-xl font-bold text-white">User Directory</h3>
-                    <button onClick={onClose} className="text-text-muted hover:text-white p-1 rounded-lg hover:bg-dc-hover">✕</button>
+                    <button onClick={onClose} className="btn-icon">✕</button>
                 </div>
 
                 <input
@@ -43,16 +43,32 @@ export default function DirectoryModal({ onClose }) {
                     autoFocus
                 />
 
-                <div className="min-h-[200px] max-h-[400px] overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                <div className="min-h-[200px] max-h-[400px] overflow-y-auto space-y-2 pr-2">
                     {searching ? (
-                        <div className="text-center text-text-muted py-4">Searching...</div>
+                        <div className="space-y-3 py-2">
+                            {[1,2,3].map(i => (
+                                <div key={i} className="flex items-center gap-3 p-2">
+                                    <div className="skeleton skeleton-avatar"></div>
+                                    <div className="flex-1 space-y-2">
+                                        <div className="skeleton skeleton-text short"></div>
+                                        <div className="skeleton skeleton-text medium"></div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     ) : results.length === 0 && query.length >= 2 ? (
-                        <div className="text-center text-text-muted py-4 italic">No users found.</div>
+                        <div className="empty-state py-6">
+                            <div className="empty-state-icon">👤</div>
+                            <div className="empty-state-title">No users found</div>
+                            <div className="empty-state-desc">Try a different username or nickname.</div>
+                        </div>
                     ) : (
                         results.map(u => (
-                            <div key={u.id} className="flex items-center gap-3 p-2 hover:bg-dc-hover transition-colors rounded-lg group">
-                                <div className="w-10 h-10 rounded-full overflow-hidden border border-white/10 flex-shrink-0 bg-dc-panel">
-                                    <img src={getAvatarUrl(u.username, u.gender)} alt="avatar" className="w-full h-full object-cover" />
+                            <div key={u.id} className="flex items-center gap-3 p-2.5 glass-message rounded-xl group animate-fade-in-up">
+                                <div className="relative flex-shrink-0">
+                                    <div className="w-10 h-10 rounded-full overflow-hidden border border-white/10 bg-dc-panel">
+                                        <img src={getAvatarUrl(u.username, u.gender)} alt="avatar" className="w-full h-full object-cover" />
+                                    </div>
                                 </div>
                                 <div className="flex-1 min-w-0">
                                     <div className="text-sm font-semibold text-white truncate">{u.nickname || u.username}</div>
@@ -62,8 +78,10 @@ export default function DirectoryModal({ onClose }) {
                         ))
                     )}
                     {query.length < 2 && (
-                        <div className="text-center text-text-muted py-4 italic text-sm">
-                            Type at least 2 characters to search.
+                        <div className="empty-state py-6">
+                            <div className="empty-state-icon">🔍</div>
+                            <div className="empty-state-title">Search users</div>
+                            <div className="empty-state-desc">Type at least 2 characters to start searching.</div>
                         </div>
                     )}
                 </div>

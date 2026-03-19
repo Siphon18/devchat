@@ -2,10 +2,12 @@ import { useEffect, useState, useRef } from "react";
 import { connectWebSocket, sendMessage } from "../services/websocket";
 import MessageList from "./MessageList";
 import CodeEditor from "./CodeEditor";
+import { useToast } from "./Toast";
 import { getMessages, clearRoomMessages, getRoomMembers, getRoomOnline, editMessage, deleteMessage, markRoomRead } from "../services/api";
 
 export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onNewMessage }) {
   const username = user?.username;
+  const toast = useToast();
   const [messages, setMessages] = useState([]);
   const [members, setMembers] = useState([]);
   const [onlineUsers, setOnlineUsers] = useState([]);
@@ -109,6 +111,10 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
             return updated;
           }
         }
+        // Deduplicate: don't append if this message ID already exists
+        if (data.message?.id && prev.some(m => m.message?.id === data.message.id)) {
+          return prev;
+        }
         // Otherwise it's a new message
         return [...prev, data];
       });
@@ -130,16 +136,17 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
     };
   }, [onNewMessage, room?.id, room?.project_id, username]);
 
-  const handleSend = async (type, content, language = null, attachments = []) => {
+  const handleSend = async (type, content, language = null, attachments = [], stdinText = "") => {
     if (editingMessage) {
       try {
         await editMessage(editingMessage.id, content);
         setEditingMessage(null);
       } catch {
-        alert("Failed to edit message");
+        toast.error("Failed to edit message");
       }
     } else {
       const payload = { sender: username, type, language, content };
+      if (stdinText) payload.stdin = stdinText;
       if (attachments?.length) payload.attachments = attachments;
       if (replyingMessage) {
         payload.reply_to_id = replyingMessage.id;
@@ -154,7 +161,7 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
       try {
         await deleteMessage(msgId);
       } catch {
-        alert("Failed to delete message");
+        toast.error("Failed to delete message");
       }
     }
   };
@@ -165,8 +172,9 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
       await clearRoomMessages(room.id);
       setMessages([]);
       setShowClearConfirm(false);
+      toast.success("Channel cleared successfully");
     } catch {
-      alert("Only the room creator or an admin can clear this channel.");
+      toast.error("Only the room creator or an admin can clear this channel.");
       setShowClearConfirm(false);
     } finally {
       setClearing(false);
@@ -178,12 +186,12 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
   return (
     <div className="flex flex-col h-full relative bg-dc-bg">
 
-      {/* Header */}
-      <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.05] flex-shrink-0 glass z-10">
+      {/* Header — glass panel */}
+      <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.04] flex-shrink-0 glass z-10">
         <div className="flex items-center gap-3">
           <button
             onClick={toggleSidebar}
-            className="text-text-muted hover:text-white p-1.5 rounded-lg hover:bg-dc-hover transition-all"
+            className="btn-icon"
             title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -198,17 +206,24 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
             </span>
             <span className="font-bold text-white text-sm">{roomDisplayName}</span>
             {room.projectName && (
-              <span className="hidden md:block text-xs text-text-muted border-l border-white/[0.08] pl-2 ml-1">
+              <span className="hidden md:inline-flex items-center text-xs text-text-muted glass-badge ml-1">
                 {room.projectName}
               </span>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          {/* Online count badge */}
+          {onlineUsers.length > 0 && (
+            <div className="hidden sm:flex items-center gap-1.5 glass-badge text-accent-green">
+              <span className="w-2 h-2 rounded-full bg-accent-green animate-pulse-slow"></span>
+              <span>{onlineUsers.length} online</span>
+            </div>
+          )}
           <button
             onClick={() => setShowClearConfirm(true)}
-            className="text-text-muted hover:text-discord-red p-1.5 rounded-lg hover:bg-dc-hover transition-all"
+            className="btn-icon hover:!text-discord-red"
             title="Clear channel"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -237,44 +252,46 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
         </div>
       </div>
 
-      {/* Typing indicator */}
-      <div className={`px-4 transition-all duration-200 overflow-hidden ${typingUsers.length > 0 ? "h-6 opacity-100" : "h-0 opacity-0"}`}>
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <div className="flex gap-0.5">
-            <span className="w-1.5 h-1.5 bg-accent-purple rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-            <span className="w-1.5 h-1.5 bg-accent-purple rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-            <span className="w-1.5 h-1.5 bg-accent-purple rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+      {/* Typing indicator — bouncing dots */}
+      <div className={`px-4 transition-all duration-300 overflow-hidden ${typingUsers.length > 0 ? "h-8 opacity-100" : "h-0 opacity-0"}`}>
+        <div className="flex items-center gap-2.5">
+          <div className="typing-indicator">
+            <div className="typing-dot"></div>
+            <div className="typing-dot"></div>
+            <div className="typing-dot"></div>
           </div>
-          <span>
+          <span className="text-xs text-text-muted">
             <strong className="text-white/80">{typingUsers.join(", ")}</strong>
-            {typingUsers.length === 1 ? " is typing..." : " are typing..."}
+            {typingUsers.length === 1 ? " is typing" : " are typing"}
           </span>
         </div>
       </div>
 
-      {/* Input */}
-      <div className="px-4 pb-5 pt-3 flex-shrink-0 border-t border-white/[0.04]">
-        <CodeEditor
-          onSend={handleSend}
-          roomName={roomDisplayName}
-          editingMessage={editingMessage}
-          onCancelEdit={() => setEditingMessage(null)}
-          replyingMessage={replyingMessage}
-          onCancelReply={() => setReplyingMessage(null)}
-        />
+      {/* Input — glass wrapper */}
+      <div className="px-4 pb-5 pt-3 flex-shrink-0">
+        <div className="glass-input rounded-2xl">
+          <CodeEditor
+            onSend={handleSend}
+            roomName={roomDisplayName}
+            editingMessage={editingMessage}
+            onCancelEdit={() => setEditingMessage(null)}
+            replyingMessage={replyingMessage}
+            onCancelReply={() => setReplyingMessage(null)}
+          />
+        </div>
       </div>
 
-      {/* Clear confirmation modal */}
+      {/* Clear confirmation modal — glass panel */}
       {showClearConfirm && (
         <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in"
           onClick={() => setShowClearConfirm(false)}
         >
           <div
-            className="glass-strong rounded-2xl p-6 w-[calc(100vw-3rem)] max-w-80 animate-scale-in border border-white/[0.08]"
+            className="glass-panel rounded-2xl p-6 w-[calc(100vw-3rem)] max-w-80 animate-scale-in"
             onClick={e => e.stopPropagation()}
           >
-            <div className="w-12 h-12 rounded-xl bg-discord-red/15 flex items-center justify-center mx-auto mb-4">
+            <div className="w-12 h-12 rounded-xl bg-discord-red/10 border border-discord-red/15 flex items-center justify-center mx-auto mb-4">
               <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#da373c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
               </svg>
@@ -307,10 +324,14 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
 
 function EmptyState({ roomName }) {
   return (
-    <div className="flex flex-col items-center justify-center flex-1 text-center py-16 animate-fade-in-up">
-      <div className="w-16 h-16 rounded-2xl glass flex items-center justify-center text-3xl mb-4">#</div>
-      <h3 className="text-xl font-bold text-white mb-2">Welcome to #{roomName}</h3>
-      <p className="text-text-secondary text-sm">This is the beginning of the channel. Say something!</p>
+    <div className="empty-state flex-1 animate-fade-in-up">
+      <div className="empty-state-icon">
+        #
+      </div>
+      <div className="empty-state-title">Welcome to #{roomName}</div>
+      <div className="empty-state-desc">
+        This is the very beginning of the channel. Start the conversation!
+      </div>
     </div>
   );
 }

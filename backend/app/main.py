@@ -707,11 +707,11 @@ def search_users(q: str, db: Session = Depends(get_db), current_user: models.Use
         return []
     
     # Escape SQL LIKE wildcards to prevent wildcard injection
-    safe_q = q.replace("%", "\\%").replace("_", "\\_")
+    safe_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     users = db.query(models.User).filter(
         or_(
-            models.User.username.ilike(f"%{safe_q}%"),
-            models.User.nickname.ilike(f"%{safe_q}%")
+            models.User.username.ilike(f"%{safe_q}%", escape="\\"),
+            models.User.nickname.ilike(f"%{safe_q}%", escape="\\")
         )
     ).limit(20).all()
     return users
@@ -1707,6 +1707,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                 content = data.get("content")
                 if msg_type not in {"text", "code"} or not isinstance(content, str):
                     continue
+                language = data.get("language")
+                if msg_type == "code" and language not in ALLOWED_CODE_LANGUAGES:
+                    continue
+                if msg_type != "code":
+                    language = None
 
                 raw_attachments = data.get("attachments") or []
                 attachments = [a for a in raw_attachments if isinstance(a, dict)]
@@ -1715,7 +1720,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                     room_id=room_id,
                     sender=current_user.username,
                     type=msg_type,
-                    language=data.get("language"),
+                    language=language,
                     content=content,
                     reply_to_id=data.get("reply_to_id")
                 )
@@ -1741,7 +1746,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                 await manager.broadcast(room_id, base_payload)
 
                 # Code execution (non-blocking via asyncio.to_thread)
-                if msg_type == "code" and data.get("language") == "python":
+                if msg_type == "code" and language == "python":
 
                     # 1. Send running state
                     running_payload = {

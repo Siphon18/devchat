@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { getRequests, respondToRequest, sendInvite, searchUsers } from "../services/api";
 import { getAvatarUrl } from "../utils/avatar";
+import { useToast } from "./Toast";
 
 export default function ManageMembersModal({ targetType, targetId, title, getMembers, onClose }) {
+    const toast = useToast();
     const [tab, setTab] = useState("members"); // "members" | "requests"
     const [members, setMembers] = useState([]);
     const [requests, setRequests] = useState([]);
@@ -58,8 +60,9 @@ export default function ManageMembersModal({ targetType, targetId, title, getMem
         try {
             await respondToRequest(id, action);
             await loadData();
+            toast.success(action === "approve" ? "Request approved" : "Request denied");
         } catch (e) {
-            alert(e.message);
+            toast.error(e.message);
         }
     };
 

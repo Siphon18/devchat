@@ -1,5 +1,6 @@
 import os
 import smtplib
+import logging
 from email.message import EmailMessage
 
 
@@ -38,6 +39,10 @@ def can_send_email() -> bool:
 def send_welcome_email(recipient_email: str, username: str) -> None:
     cfg = _smtp_config()
     if not can_send_email():
+        logging.info(
+            "Welcome email skipped for %s: mailer not configured/enabled",
+            recipient_email,
+        )
         return
 
     message = EmailMessage()
@@ -111,4 +116,5 @@ def send_welcome_email_safe(recipient_email: str, username: str) -> None:
         send_welcome_email(recipient_email, username)
     except Exception:
         # Email delivery should never block user registration.
+        logging.exception("Failed to send welcome email to %s", recipient_email)
         return

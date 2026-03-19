@@ -88,6 +88,18 @@ export async function deleteProject(projectId) {
     return res.json();
 }
 
+export async function toggleProjectVisibility(projectId) {
+    const res = await fetch(`${BASE}/projects/${projectId}/visibility`, {
+        method: "PATCH",
+        headers: getHeaders()
+    });
+    if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to toggle visibility");
+    }
+    return res.json();
+}
+
 export async function deleteRoom(roomId) {
     const res = await fetch(`${BASE}/rooms/${roomId}`, {
         method: "DELETE",
@@ -139,6 +151,13 @@ export async function sendInvite(targetType, targetId, username) {
 
 export async function getInvites() {
     const res = await fetch(`${BASE}/invites/me`, {
+        headers: getHeaders()
+    });
+    return res.json();
+}
+
+export async function getIncomingRequests() {
+    const res = await fetch(`${BASE}/requests/incoming`, {
         headers: getHeaders()
     });
     return res.json();

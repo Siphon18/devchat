@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { sendTypingEvent } from "../services/websocket";
 import { uploadAttachment } from "../services/api";
+import { useToast } from "./Toast";
 
 const LANGUAGES = [
   { id: "python", label: "Python", icon: "Py" },
@@ -23,6 +24,7 @@ const ACCEPTED_FILES = [
 ].join(",");
 
 export default function CodeEditor({ onSend, roomName, editingMessage, onCancelEdit, replyingMessage, onCancelReply }) {
+  const toast = useToast();
   const [text, setText] = useState("");
   const [code, setCode] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
@@ -31,6 +33,8 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [stdin, setStdin] = useState("");
+  const [showStdin, setShowStdin] = useState(false);
 
   const [recorderOpen, setRecorderOpen] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -91,10 +95,10 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
     if (!isExpanded) setText("");
   };
 
-  const triggerSend = async (type, content, lang = null, files = []) => {
+  const triggerSend = async (type, content, lang = null, files = [], stdinText = "") => {
     setSending(true);
     try {
-      await onSend(type, content, lang, files);
+      await onSend(type, content, lang, files, stdinText);
     } finally {
       setTimeout(() => setSending(false), 450);
     }
@@ -111,8 +115,10 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const handleSendCode = async () => {
     const content = code.trim();
     if (!content) return;
-    await triggerSend("code", content, language, attachments);
+    await triggerSend("code", content, language, attachments, stdin);
     setCode("");
+    setStdin("");
+    setShowStdin(false);
     setIsExpanded(false);
     setAttachments([]);
   };
@@ -129,7 +135,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
       }
       setAttachments((prev) => [...prev, ...uploaded]);
     } catch (e) {
-      alert(e.message || "Upload failed");
+      toast.error(e.message || "Upload failed");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -395,7 +401,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
           const att = await uploadAttachment(file);
           await triggerSend("text", "", null, [att]);
         } catch (e) {
-          alert(e.message || "Voice note failed");
+          toast.error(e.message || "Voice note failed");
         } finally {
           setRecordActionLoading(false);
           setRecorderOpen(false);
@@ -565,6 +571,39 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                 }}
               />
             </div>
+
+            {/* Stdin input panel */}
+            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/[0.05] bg-dc-panel/30">
+              <button
+                onClick={() => setShowStdin((v) => !v)}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                  showStdin
+                    ? "bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/25"
+                    : "text-text-muted hover:text-white hover:bg-dc-hover"
+                }`}
+              >
+                <TerminalIcon className="w-3 h-3" />
+                stdin
+                {stdin && <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan" />}
+              </button>
+              <span className="text-[10px] text-text-muted">
+                numpy · pandas · matplotlib · requests · scipy · scikit-learn
+              </span>
+            </div>
+            {showStdin && (
+              <div className="px-3 py-2 border-b border-white/[0.05] bg-black/20 animate-fade-in-down">
+                <label className="text-[10px] text-text-muted uppercase tracking-wider font-semibold mb-1 block">
+                  Standard Input (for input() calls — one value per line)
+                </label>
+                <textarea
+                  value={stdin}
+                  onChange={(e) => setStdin(e.target.value)}
+                  placeholder={"e.g.\nAlice\n25\nhello world"}
+                  rows={3}
+                  className="w-full bg-black/30 text-xs text-accent-cyan font-mono rounded-lg px-3 py-2 border border-white/[0.06] focus:border-accent-cyan/40 focus:outline-none resize-none placeholder-text-muted/40"
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -704,6 +743,9 @@ function PaperclipIcon({ className }) {
       <line x1="8" y1="12" x2="16" y2="12" strokeWidth="2" />
     </svg>
   );
+}
+function TerminalIcon({ className }) {
+  return <IconBase className={className}><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></IconBase>;
 }
 function MicIcon({ className }) {
   return (

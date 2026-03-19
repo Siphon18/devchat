@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from "react";
 import {
     getProjects, getRooms, createProject, createRoom,
-    deleteProject, deleteRoom, getRoomMembers, getProjectMembers, sendJoinRequest, getInviteCount, getUnreadCounts, markRoomRead, getAllUnreadCounts
+    deleteProject, deleteRoom, getRoomMembers, getProjectMembers, sendJoinRequest, getInviteCount, getUnreadCounts, markRoomRead, getAllUnreadCounts, toggleProjectVisibility
 } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { getAvatarUrl } from "../utils/avatar";
@@ -10,6 +10,7 @@ import InboxModal from "./InboxModal";
 import DirectoryModal from "./DirectoryModal";
 import ManageMembersModal from "./ManageMembersModal";
 import SearchProjectsModal from "./SearchProjectsModal";
+import { useToast } from "./Toast";
 
 function getStableDiscriminator(username) {
     const key = `devchat_disc_${username}`;
@@ -44,7 +45,8 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
     const [showSearchProjects, setShowSearchProjects] = useState(false);
     const [manageTarget, setManageTarget] = useState(null); // { type: 'room'|'project', id, name }
 
-    const { user, setUser } = useAuth(); // Needed to update nickname globally
+    const { user, setUser, logout } = useAuth();
+    const toast = useToast();
     const sidebarRef = useRef(null);
 
     async function loadProjects() {
@@ -91,7 +93,7 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
             }
         };
         fetchGlobalData();
-        const interval = setInterval(fetchGlobalData, 3000); // 3 seconds for near real-time updates across rooms
+        const interval = setInterval(fetchGlobalData, 30000); // 30 seconds to reduce DB load
         return () => clearInterval(interval);
     }, [activeRoomId]);
 
@@ -137,14 +139,15 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
             const result = await createProject(newProjectName, isProjectPublic);
             if (result.detail) {
                 console.error("Create project error:", result.detail);
-                alert("Error: " + result.detail);
+                toast.error("Error: " + result.detail);
                 return;
             }
             setNewProjectName(""); setIsCreatingProject(false); setIsProjectPublic(false);
             await loadProjects();
+            toast.success("Project created");
         } catch (err) {
             console.error("Create project failed:", err);
-            alert("Failed to create project: " + err.message);
+            toast.error("Failed to create project: " + err.message);
         }
     };
 
@@ -158,7 +161,25 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
 
     const handleContextMenu = (e, type, item) => {
         e.preventDefault();
-        setContextMenu({ x: e.clientX, y: e.clientY, type, id: item.id, name: item.name, projectId: item.project_id });
+        setContextMenu({ x: e.clientX, y: e.clientY, type, id: item.id, name: item.name, projectId: item.project_id, is_public: item.is_public, owner_id: item.owner_id });
+    };
+
+    const handleToggleVisibility = async () => {
+        if (!contextMenu || contextMenu.type !== "project") return;
+        const targetProject = projects.find(p => p.id === contextMenu.id);
+        if (!targetProject || !user || targetProject.owner_id !== user.id) {
+            toast.error("Only the project admin can change visibility.");
+            setContextMenu(null);
+            return;
+        }
+        try {
+            await toggleProjectVisibility(contextMenu.id);
+            await loadProjects();
+            toast.success("Project visibility updated");
+        } catch (e) {
+            toast.error(`Failed: ${e.message}`);
+        }
+        setContextMenu(null);
     };
 
     const handleDelete = async () => {
@@ -166,7 +187,7 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
 
         const targetProject = projects.find(p => p.id === (contextMenu.type === "project" ? contextMenu.id : contextMenu.projectId));
         if (targetProject && user && targetProject.owner_id !== user.id) {
-            alert("Whoa there, chief! 🛑 Only the mighty Project Admin wields the power to delete things here. Nice try though! 😉");
+            toast.error("Only the project admin can delete projects/channels.");
             setContextMenu(null);
             return;
         }
@@ -176,12 +197,14 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
                 await deleteProject(contextMenu.id);
                 await loadProjects();
                 if (expandedProject === contextMenu.id) setExpandedProject(null);
+                toast.success("Project deleted");
             }
         } else {
             if (window.confirm(`Delete channel "#${contextMenu.name}"?`)) {
                 await deleteRoom(contextMenu.id);
                 const updated = await getRooms(contextMenu.projectId);
                 setRooms(p => ({ ...p, [contextMenu.projectId]: updated }));
+                toast.success("Channel deleted");
             }
         }
         setContextMenu(null);
@@ -220,9 +243,9 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
         if (!contextMenu) return;
         try {
             await sendJoinRequest(contextMenu.type, contextMenu.id);
-            alert(`Join request sent for ${contextMenu.type} ${contextMenu.name}!`);
+            toast.success(`Join request sent for ${contextMenu.type} ${contextMenu.name}`);
         } catch (e) {
-            alert(`Failed: ${e.message}`);
+            toast.error(`Failed: ${e.message}`);
         }
         setContextMenu(null);
     };
@@ -326,7 +349,7 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
                                 onToggle={() => toggleProject(p.id)}
                                 onCreateRoomToggle={() => {
                                     if (p.owner_id !== user?.id) {
-                                        alert("Hold your horses, cowboy! 🤠 Only the grand Poobah (Admin) of this project can create new channels. No unauthorized construction allowed! 🚧");
+                                        toast.error("Only the project admin can create new channels.");
                                         return;
                                     }
                                     setIsCreatingRoom(isCreatingRoom === p.id ? false : p.id)
@@ -394,6 +417,16 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
                                     <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                                 </svg>
                             </button>
+
+                            <button
+                                onClick={logout}
+                                className="text-text-muted hover:text-discord-red p-1.5 rounded-lg hover:bg-discord-red/10 transition-all"
+                                title="Log Out"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -442,6 +475,22 @@ const RoomSidebar = forwardRef(function RoomSidebar({ isOpen, onRoomSelect, onCl
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" /></svg>
                         Request to Join
                     </button>
+                    {contextMenu.type === "project" && user && (() => {
+                        const proj = projects.find(p => p.id === contextMenu.id);
+                        return proj && proj.owner_id === user.id;
+                    })() && (
+                        <button
+                            onClick={handleToggleVisibility}
+                            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-dc-hover hover:text-white transition-colors flex items-center gap-2.5"
+                        >
+                            {contextMenu.is_public ? (
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                            ) : (
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+                            )}
+                            {contextMenu.is_public ? "Make Private" : "Make Public"}
+                        </button>
+                    )}
                     <div className="h-px bg-white/[0.05] mx-2 my-1" />
                     <button
                         onClick={handleDelete}

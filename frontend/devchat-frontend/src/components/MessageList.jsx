@@ -99,7 +99,7 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
 
   return (
     <div
-      className={`flex gap-3 px-2 py-0.5 group/row hover:bg-white/[0.03] rounded-xl transition-colors animate-fade-in-up w-full ${isUser ? "flex-row-reverse" : "flex-row"} ${isGrouped ? "mt-0" : "mt-3"}`}
+      className={`message-row flex gap-3 px-2 py-0.5 rounded-xl transition-colors animate-fade-in-up w-full ${isUser ? "flex-row-reverse" : "flex-row"} ${isGrouped ? "mt-0" : "mt-3"}`}
       style={{ animationDelay: `${Math.min(index * 0.03, 0.3)}s` }}
     >
       {/* Avatar — completely hidden for current user, hidden for others when grouped */}
@@ -116,7 +116,7 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
                 />
               </div>
               {isOnline && (
-                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-accent-green rounded-full border-2 border-dc-bg" />
+                <span className="status-dot online" />
               )}
             </div>
           )}
@@ -154,20 +154,19 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
         {/* Message body */}
         <div className={`relative flex items-center z-10 w-full ${isUser ? "justify-end" : "justify-start"}`}>
 
-          {/* Custom Hover Toolbar (Replacing right-click menu) */}
+          {/* Hover action bar */}
           {!msg.message.is_deleted && (
-            <div className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 transition-all duration-200 flex items-center bg-dc-panel border border-white/10 rounded-lg shadow-xl overflow-hidden z-20 ${isUser ? "right-[100%] mr-2" : "left-[100%] ml-2"}`}>
-              <button onClick={() => onReply(msg)} className="p-1.5 text-text-muted hover:text-white hover:bg-white/10 transition-colors" title="Reply">
+            <div className={`message-actions ${isUser ? "!right-auto !left-3" : ""}`}>
+              <button onClick={() => onReply(msg)} title="Reply">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>
               </button>
 
               {isUser && (
                 <>
-                  <div className="w-px h-4 bg-white/10 mx-0.5" />
-                  <button onClick={() => onEdit(msg)} className="p-1.5 text-text-muted hover:text-accent-purple hover:bg-white/10 transition-colors" title="Edit">
+                  <button onClick={() => onEdit(msg)} title="Edit">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
                   </button>
-                  <button onClick={() => onDelete(msg.message.id)} className="p-1.5 text-text-muted hover:text-discord-red hover:bg-white/10 transition-colors" title="Delete">
+                  <button onClick={() => onDelete(msg.message.id)} className="danger" title="Delete">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                   </button>
                 </>
@@ -201,9 +200,9 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
 function TextMessage({ msg, isUser }) {
   const attachments = msg.message.attachments || [];
   return (
-    <div className={`w-full rounded-2xl overflow-hidden border shadow-sm transition-all max-w-full ${isUser
-      ? "bg-accent-purple/20 border-accent-purple/20 rounded-tr-sm"
-      : "bg-dc-card border-white/[0.05] rounded-tl-sm"}`}>
+    <div className={`w-full rounded-2xl overflow-hidden shadow-sm transition-all max-w-full ${isUser
+      ? "bg-accent-purple/15 border border-accent-purple/15 rounded-tr-sm"
+      : "glass-message rounded-tl-sm"}`}>
       {msg.message.content && (
         <div className="px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words text-text-primary">
           {msg.message.content}
@@ -311,10 +310,24 @@ function ExecutionBlock({ execution }) {
         <div className="flex items-center gap-1.5 mb-1.5">
           <span className="w-2 h-2 rounded-full bg-accent-green" />
           <span className="text-[10px] text-accent-green font-semibold uppercase tracking-wider">Output</span>
+          {execution.runtime && <span className="text-[10px] text-accent-green/50 ml-auto font-mono">{execution.runtime}</span>}
         </div>
         <pre className="text-xs text-accent-green/90 font-mono whitespace-pre-wrap break-words">
           {execution.stdout}
         </pre>
+      </div>
+    );
+  }
+
+  if (execution.status === "success" && !execution.stdout) {
+    return (
+      <div className="px-4 py-3 border-t border-accent-green/10 bg-accent-green/5">
+        <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-accent-green" />
+          <span className="text-[10px] text-accent-green font-semibold uppercase tracking-wider">Success</span>
+          {execution.runtime && <span className="text-[10px] text-accent-green/50 ml-auto font-mono">{execution.runtime}</span>}
+        </div>
+        <span className="text-[11px] text-accent-green/50 italic">Program finished with no output.</span>
       </div>
     );
   }
@@ -326,6 +339,7 @@ function ExecutionBlock({ execution }) {
         <div className="flex items-center gap-1.5 mb-1.5">
           <span className="w-2 h-2 rounded-full bg-discord-red" />
           <span className="text-[10px] text-discord-red font-semibold uppercase tracking-wider">Error</span>
+          {execution.runtime && <span className="text-[10px] text-discord-red/50 ml-auto font-mono">{execution.runtime}</span>}
         </div>
         <pre className="text-xs text-discord-red/90 font-mono whitespace-pre-wrap break-words">
           {errMsg}

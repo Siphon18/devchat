@@ -33,7 +33,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-devchat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}@postgres:5432/${POSTGRES_DB:-devchat}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your .env}
-      FRONTEND_URL: ${FRONTEND_URL:-http://10.157.92.79}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
       ENABLE_DOCS: ${ENABLE_DOCS:-false}
       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
@@ -43,6 +43,14 @@ services:
       RATE_LIMIT_MESSAGE_MAX: ${RATE_LIMIT_MESSAGE_MAX:-120}
       MAX_USER_STORAGE_BYTES: ${MAX_USER_STORAGE_BYTES:-262144000}
       MAX_ATTACHMENTS_PER_MESSAGE: ${MAX_ATTACHMENTS_PER_MESSAGE:-10}
+      WELCOME_EMAIL_ENABLED: ${WELCOME_EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-DevChat}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,7 +62,7 @@ services:
     build:
       context: ./frontend/devchat-frontend
       args:
-        - VITE_API_URL=http://10.157.92.79:8000
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
     restart: unless-stopped
     ports:
       - "80:80"
