@@ -71,7 +71,7 @@ _rate_state: dict[str, deque[float]] = defaultdict(deque)
 _rate_lock = Lock()
 
 # ── CORS — must be before any route definitions ──────────────────────────
-frontend_url = os.getenv("FRONTEND_URL", "").strip()
+frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
 allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
