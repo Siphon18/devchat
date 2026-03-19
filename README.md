@@ -1,89 +1,159 @@
 # DevChat
 
-DevChat is a full-stack real-time collaboration chat platform with:
+DevChat is a full-stack, real-time collaboration platform for teams that want chat, lightweight project organization, and in-chat code execution in one place.
 
-- project and room based chat
-- private/public access controls
-- unread counters and read tracking
-- typing indicator and online presence
-- code messages with Python execution output
-- file attachments (images, docs, audio)
-- WhatsApp-style voice note recording UI with visualizer
+It combines:
+- project and room based messaging
+- role-based member access controls
+- live presence and typing events over WebSocket
+- Python code messages with execution output
+- file and voice-note attachments
+- glassmorphism-first frontend design system
 
-The app is dockerized and ready for local use and small-group deployment.
+The repository is production-oriented and supports both local Docker development and Render deployment.
 
-## Tech Stack
+## Core Capabilities
 
-- Frontend: React + Vite + Tailwind + Nginx
-- Backend: FastAPI + SQLAlchemy + WebSocket
-- Database: PostgreSQL
-- Runtime: Docker Compose
+- Real-time chat with online presence updates
+- Public and private projects/rooms with join request workflow
+- Unread tracking at room and project level
+- Message editing, deletion, reply threading preview
+- Attachment uploads with validation and cleanup on message delete
+- Code blocks with server-side Python execution and streamed status (`running` -> `success/error`)
+- OAuth login support (GitHub and Google)
+- Welcome email support via SMTP (optional, feature-flagged)
 
-## Repository Layout
+## Architecture
 
-- `backend/`: FastAPI app, DB models, migrations
-- `frontend/devchat-frontend/`: React app
-- `docker-compose.yml`: full-stack local/prod compose setup
+### Frontend
+- React + Vite SPA in `frontend/devchat-frontend/`
+- Component-based chat UI with dedicated modals for inbox, directory, member management, and project discovery
+- Global toast system (`ToastProvider`, `useToast`) replacing browser alerts
+- Styling centered around reusable glass classes in `src/index.css` (`.glass`, `.glass-panel`, `.glass-message`, etc.)
 
-## Prerequisites
+### Backend
+- FastAPI app in `backend/app/main.py`
+- SQLAlchemy ORM models in `backend/app/models.py`
+- JWT auth + OAuth integration
+- REST endpoints for CRUD and membership operations
+- WebSocket endpoint for room-level real-time messaging and presence
+- Sandboxed Python execution subsystem in `backend/app/executor.py`
+- SMTP mailer in `backend/app/mailer.py`
 
-- Docker Desktop (or Docker Engine + Compose plugin)
-- Git
+### Data Layer
+- PostgreSQL
+- Alembic migrations in `backend/migrations/`
+- Schema validation with Pydantic models in `backend/app/schemas.py`
 
-## Quick Start
+## Security and Reliability Highlights
 
-1. Clone:
+- Rate limiting middleware with periodic bucket pruning to prevent in-memory growth
+- Message type and language allowlist enforcement
+- SQL wildcard escaping for user search (`LIKE` wildcard injection mitigation)
+- Access checks for projects/rooms on both HTTP and WebSocket paths
+- Sandboxed execution blocks dangerous imports/builtins and strips subprocess environment
+- Upload validation (MIME allowlist, URL normalization, user quota)
+- Attachment file cleanup when message records are deleted
+- WebSocket error isolation: malformed events are logged and skipped without killing connection
+
+## Repository Structure
+
+- `backend/` FastAPI service, DB layer, migrations, Docker image
+- `backend/scripts/send_test_welcome_email.py` CLI tool to validate/send test welcome emails
+- `frontend/devchat-frontend/` React client, UI components, Vite config
+- `docker-compose.yml` local full-stack orchestration
+- `render.yaml` Render deployment manifest
+
+## Quick Start (Local)
+
+1. Clone
 ```bash
 git clone https://github.com/Siphon18/devchat.git
 cd devchat
 ```
 
-2. Create root env file:
+2. Create root environment file from backend template
 ```bash
 cp backend/.env.example .env
 ```
 
-3. Set at least:
-- `SECRET_KEY` to a strong random value
+3. Set required values in `.env`
+- `SECRET_KEY` (strong random)
+- `POSTGRES_PASSWORD`
 
-4. Start services:
+4. Build and run
 ```bash
 docker compose up -d --build
 ```
 
-5. Open:
+5. Open
 - Frontend: `http://localhost`
 - Backend health: `http://localhost:8000/`
 
-## Environment Variables
+## Environment Configuration
 
-Important variables from `.env`:
-
-- `SECRET_KEY`: JWT signing key (required)
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`: DB credentials
-- `FRONTEND_URL`: frontend origin for CORS
+Primary variables:
+- `DATABASE_URL`
+- `SECRET_KEY`
+- `FRONTEND_URL`
 - `ACCESS_TOKEN_EXPIRE_MINUTES`
-- `ENABLE_DOCS`: `true|false` (Swagger/ReDoc exposure)
-- `RATE_LIMIT_*`: API rate limiting knobs
-- `MAX_USER_STORAGE_BYTES`: per-user attachment quota
-- `MAX_ATTACHMENTS_PER_MESSAGE`: attachment count limit
+- `ENABLE_DOCS`
 
-## Security Defaults Included
+Rate limiting and upload controls:
+- `RATE_LIMIT_WINDOW_SECONDS`
+- `RATE_LIMIT_DEFAULT_MAX`
+- `RATE_LIMIT_AUTH_MAX`
+- `RATE_LIMIT_UPLOAD_MAX`
+- `RATE_LIMIT_MESSAGE_MAX`
+- `MAX_USER_STORAGE_BYTES`
+- `MAX_ATTACHMENTS_PER_MESSAGE`
 
-- API rate limiting for auth, uploads and messages
-- attachment MIME type validation and size limits
-- per-user upload quota guard
-- attachment URL normalization to local `/uploads/*`
-- docs disabled by default via `ENABLE_DOCS=false`
+Welcome email (SMTP):
+- `WELCOME_EMAIL_ENABLED`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+- `SMTP_FROM_NAME`
+- `SMTP_USE_TLS`
 
-## Useful Commands
+OAuth:
+- `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 
-Build and run:
+## Email Verification Workflow
+
+Check SMTP config without sending:
+```bash
+python backend/scripts/send_test_welcome_email.py --to you@example.com --check-only
+```
+
+Send a real test welcome email:
+```bash
+python backend/scripts/send_test_welcome_email.py --to you@example.com --username testuser
+```
+
+## Deployment
+
+### Render (Backend)
+- `render.yaml` defines a Docker web service with `autoDeploy: true`
+- Push to `main` triggers rebuild and redeploy
+- Keep sensitive env vars in Render dashboard (not in git)
+- After changing env vars, run `Manual Deploy -> Deploy latest commit`
+
+### Frontend
+- Can be served via included nginx Dockerfile in `frontend/devchat-frontend/`
+- Ensure `VITE_API_URL` points to backend URL
+
+## Operational Commands
+
+Start/rebuild:
 ```bash
 docker compose up -d --build
 ```
 
-View logs:
+Logs:
 ```bash
 docker compose logs -f backend
 docker compose logs -f frontend
@@ -94,16 +164,14 @@ Stop:
 docker compose down
 ```
 
-## Deployment (Free VM style)
-
-For stable free usage with WebSocket + file uploads, deploy this compose setup to a single Linux VM (for example Oracle Cloud Always Free), then:
-
-1. copy repo + `.env`
-2. set strong secrets and domain values
-3. run `docker compose up -d --build`
-4. put TLS (Caddy/Nginx + Let's Encrypt) in front
+Frontend production build check:
+```bash
+cd frontend/devchat-frontend
+npm run build
+```
 
 ## Notes
 
-- Local artifact files (`*.db`, uploads, temporary smoke outputs) are ignored and should not be committed.
-- If you enable API docs in production, protect them behind auth or IP restrictions.
+- Do not commit `.env` or secrets.
+- Rotate any credential that has been shared publicly.
+- Keep SMTP sender addresses verified with your provider (for example Brevo) to avoid delivery failures.
