@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from app.database import Base, engine, SessionLocal
 from app import models, schemas, auth
 from app.mailer import send_welcome_email_safe
-from app.executor import execute_python
+from app.executor import SUPPORTED_LANGUAGES, execute_code
 from app.websocket import manager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -974,15 +974,17 @@ def seed_default_projects(db: Session = Depends(get_db), current_user: models.Us
 # -------- MESSAGES --------
 
 ALLOWED_MESSAGE_TYPES = {"text", "code"}
-ALLOWED_CODE_LANGUAGES = {"python"}
+ALLOWED_CODE_LANGUAGES = SUPPORTED_LANGUAGES
 
 
 @app.post("/messages")
 def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    message_language = (message.language.value if hasattr(message.language, "value") else message.language) or "python"
+
     # Validate message type and language
     if message.type not in ALLOWED_MESSAGE_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid message type. Must be one of: {', '.join(ALLOWED_MESSAGE_TYPES)}")
-    if message.type == "code" and message.language and message.language not in ALLOWED_CODE_LANGUAGES:
+    if message.type == "code" and message_language not in ALLOWED_CODE_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language. Must be one of: {', '.join(ALLOWED_CODE_LANGUAGES)}")
 
     require_room_access(db, message.room_id, current_user.id)
@@ -990,7 +992,7 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
         room_id=message.room_id,
         sender=current_user.username,
         type=message.type,
-        language=message.language,
+        language=message_language if message.type == "code" else None,
         content=message.content,
         reply_to_id=message.reply_to_id,
     )
@@ -1008,8 +1010,12 @@ def create_message(message: schemas.MessageCreate, db: Session = Depends(get_db)
 
     execution_result = None
 
-    if message.type == "code" and message.language == "python":
-        execution_result = execute_python(message.content, stdin_text=message.stdin or "")  
+    if message.type == "code":
+        execution_result = execute_code(
+            code=message.content,
+            language=message_language,
+            stdin_text=message.stdin or "",
+        )
 
     if execution_result:
         exec_entry = CodeExecution(
@@ -1707,11 +1713,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                 content = data.get("content")
                 if msg_type not in {"text", "code"} or not isinstance(content, str):
                     continue
-                language = data.get("language")
+                language = (data.get("language") or "python") if msg_type == "code" else None
                 if msg_type == "code" and language not in ALLOWED_CODE_LANGUAGES:
                     continue
-                if msg_type != "code":
-                    language = None
 
                 raw_attachments = data.get("attachments") or []
                 attachments = [a for a in raw_attachments if isinstance(a, dict)]
@@ -1746,7 +1750,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
                 await manager.broadcast(room_id, base_payload)
 
                 # Code execution (non-blocking via asyncio.to_thread)
-                if msg_type == "code" and language == "python":
+                if msg_type == "code" and language:
 
                     # 1. Send running state
                     running_payload = {
@@ -1759,7 +1763,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""
 
                     # 2. Execute code in a thread to avoid blocking the event loop
                     stdin_text = data.get("stdin") or ""
-                    execution_result = await asyncio.to_thread(execute_python, content, stdin_text=stdin_text)
+                    execution_result = await asyncio.to_thread(
+                        execute_code,
+                        content,
+                        language,
+                        stdin_text,
+                    )
 
                     exec_entry = CodeExecution(
                         message_id=db_message.id,

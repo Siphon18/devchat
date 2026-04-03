@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { connectWebSocket, sendMessage } from "../services/websocket";
 import MessageList from "./MessageList";
 import CodeEditor from "./CodeEditor";
 import { useToast } from "./Toast";
 import { getMessages, clearRoomMessages, getRoomMembers, getRoomOnline, editMessage, deleteMessage, markRoomRead } from "../services/api";
+import { fade, fadeUp, scaleIn } from "../utils/motion";
 
 export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onNewMessage }) {
   const username = user?.username;
@@ -18,6 +20,7 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
   const [replyingMessage, setReplyingMessage] = useState(null);
   const prevRoomId = useRef(null);
   const typingTimers = useRef({});
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (!room?.id) return;
@@ -182,60 +185,84 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
   };
 
   const roomDisplayName = room.name.toLowerCase().replace(/\s+/g, "-");
+  const totalMessages = messages.length;
+  const roomKindLabel = room.is_private ? "Private channel" : "Open channel";
 
   return (
-    <div className="flex flex-col h-full relative bg-dc-bg">
+    <div className="chat-workspace flex flex-col h-full relative bg-dc-bg">
+      <div className="chat-workspace-glow" />
 
       {/* Header — glass panel */}
-      <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.04] flex-shrink-0 glass z-10">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={toggleSidebar}
-            className="btn-icon"
-            title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-          </button>
+      <motion.div
+        key={`room-header-${room.id}`}
+        className="chat-room-header flex-shrink-0 z-10"
+        variants={fadeUp}
+        initial={reduceMotion ? false : "hidden"}
+        animate="visible"
+      >
+        <div className="chat-room-header-row">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              onClick={toggleSidebar}
+              className="btn-icon"
+              title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xl font-light text-text-muted">
-              {room.is_private ? <LockIcon className="w-[18px] h-[18px]" /> : "#"}
-            </span>
-            <span className="font-bold text-white text-sm">{roomDisplayName}</span>
-            {room.projectName && (
-              <span className="hidden md:inline-flex items-center text-xs text-text-muted glass-badge ml-1">
-                {room.projectName}
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xl font-light text-text-muted flex-shrink-0">
+                {room.is_private ? <LockIcon className="w-[18px] h-[18px]" /> : "#"}
               </span>
-            )}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                  <span className="font-bold text-white text-sm truncate">{roomDisplayName}</span>
+                  <span className="chat-room-chip">{roomKindLabel}</span>
+                  {room.projectName && (
+                    <span className="chat-room-chip subtle">{room.projectName}</span>
+                  )}
+                </div>
+                <div className="chat-room-subtitle">
+                  Live collaboration space with code execution, replies, and room presence.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="chat-room-metrics">
+            <div className="chat-room-stat">
+              <span className="chat-room-stat-label">Online</span>
+              <span className="chat-room-stat-value text-accent-green">{onlineUsers.length}</span>
+            </div>
+            <div className="chat-room-stat hidden sm:flex">
+              <span className="chat-room-stat-label">Messages</span>
+              <span className="chat-room-stat-value">{totalMessages}</span>
+            </div>
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="btn-icon hover:!text-discord-red"
+              title="Clear channel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+              </svg>
+            </button>
           </div>
         </div>
-
-        <div className="flex items-center gap-2">
-          {/* Online count badge */}
-          {onlineUsers.length > 0 && (
-            <div className="hidden sm:flex items-center gap-1.5 glass-badge text-accent-green">
-              <span className="w-2 h-2 rounded-full bg-accent-green animate-pulse-slow"></span>
-              <span>{onlineUsers.length} online</span>
-            </div>
-          )}
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="btn-icon hover:!text-discord-red"
-            title="Clear channel"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-            </svg>
-          </button>
-        </div>
-      </div>
+      </motion.div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto flex flex-col-reverse">
-        <div className="flex flex-col justify-end min-h-full px-4 py-4">
+      <motion.div
+        key={`thread-${room.id}`}
+        className="chat-thread-shell flex-1 overflow-y-auto flex flex-col-reverse"
+        variants={fade}
+        initial={reduceMotion ? false : "hidden"}
+        animate="visible"
+      >
+        <div className="chat-thread-content flex flex-col justify-end min-h-full px-4 py-4">
           {messages.length === 0 ? (
             <EmptyState roomName={roomDisplayName} />
           ) : (
@@ -250,26 +277,36 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
             />
           )}
         </div>
-      </div>
+      </motion.div>
 
       {/* Typing indicator — bouncing dots */}
-      <div className={`px-4 transition-all duration-300 overflow-hidden ${typingUsers.length > 0 ? "h-8 opacity-100" : "h-0 opacity-0"}`}>
-        <div className="flex items-center gap-2.5">
-          <div className="typing-indicator">
-            <div className="typing-dot"></div>
-            <div className="typing-dot"></div>
-            <div className="typing-dot"></div>
-          </div>
-          <span className="text-xs text-text-muted">
-            <strong className="text-white/80">{typingUsers.join(", ")}</strong>
-            {typingUsers.length === 1 ? " is typing" : " are typing"}
-          </span>
-        </div>
+      <div className="px-4">
+        <AnimatePresence initial={false}>
+          {typingUsers.length > 0 && (
+            <motion.div
+              className="chat-typing-bar"
+              variants={fadeUp}
+              initial={reduceMotion ? false : "hidden"}
+              animate="visible"
+              exit="exit"
+            >
+              <div className="typing-indicator">
+                <div className="typing-dot"></div>
+                <div className="typing-dot"></div>
+                <div className="typing-dot"></div>
+              </div>
+              <span className="text-xs text-text-muted">
+                <strong className="text-white/80">{typingUsers.join(", ")}</strong>
+                {typingUsers.length === 1 ? " is typing" : " are typing"}
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Input — glass wrapper */}
-      <div className="px-4 pb-5 pt-3 flex-shrink-0">
-        <div className="glass-input rounded-2xl">
+      <div className="chat-composer-wrap px-4 pb-5 pt-3 flex-shrink-0">
+        <div className="chat-composer-shell glass-input rounded-2xl">
           <CodeEditor
             onSend={handleSend}
             roomName={roomDisplayName}
@@ -282,15 +319,24 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
       </div>
 
       {/* Clear confirmation modal — glass panel */}
-      {showClearConfirm && (
-        <div
-          className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in"
-          onClick={() => setShowClearConfirm(false)}
-        >
-          <div
-            className="glass-panel rounded-2xl p-6 w-[calc(100vw-3rem)] max-w-80 animate-scale-in"
-            onClick={e => e.stopPropagation()}
+      <AnimatePresence>
+        {showClearConfirm && (
+          <motion.div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+            onClick={() => setShowClearConfirm(false)}
+            variants={fade}
+            initial={reduceMotion ? false : "hidden"}
+            animate="visible"
+            exit="exit"
           >
+            <motion.div
+              className="glass-panel rounded-2xl p-6 w-[calc(100vw-3rem)] max-w-80"
+              onClick={e => e.stopPropagation()}
+              variants={scaleIn}
+              initial={reduceMotion ? false : "hidden"}
+              animate="visible"
+              exit="exit"
+            >
             <div className="w-12 h-12 rounded-xl bg-discord-red/10 border border-discord-red/15 flex items-center justify-center mx-auto mb-4">
               <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#da373c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
@@ -315,9 +361,10 @@ export default function ChatWindow({ room, user, sidebarOpen, toggleSidebar, onN
                 {clearing ? "Clearing..." : "Clear"}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

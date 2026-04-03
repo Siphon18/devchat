@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, createContext, useContext } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { scaleIn } from "../utils/motion";
 
 const ToastContext = createContext(null);
 
@@ -12,6 +14,7 @@ let toastId = 0;
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
+  const reduceMotion = useReducedMotion();
 
   const addToast = useCallback((message, type = "info", duration = 3500) => {
     const id = ++toastId;
@@ -37,20 +40,27 @@ export function ToastProvider({ children }) {
   toastFn.info = (msg) => addToast(msg, "info");
 
   return (
-    <ToastContext.Provider value={toastFn}>
+      <ToastContext.Provider value={toastFn}>
       {children}
       <div className="toast-container">
-        {toasts.map(t => (
-          <div
-            key={t.id}
-            className={`toast ${t.type} ${t.exiting ? "exiting" : ""}`}
-          >
-            <span className="text-base">
-              {t.type === "success" ? "✓" : t.type === "error" ? "✕" : "ℹ"}
-            </span>
-            <span>{t.message}</span>
-          </div>
-        ))}
+        <AnimatePresence initial={false}>
+          {toasts.map(t => (
+            <motion.div
+              key={t.id}
+              className={`toast ${t.type} ${t.exiting ? "exiting" : ""}`}
+              variants={scaleIn}
+              initial={reduceMotion ? false : "hidden"}
+              animate="visible"
+              exit="exit"
+              layout={!reduceMotion}
+            >
+              <span className="text-base">
+                {t.type === "success" ? "✓" : t.type === "error" ? "✕" : "ℹ"}
+              </span>
+              <span>{t.message}</span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );

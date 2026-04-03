@@ -2,6 +2,22 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    default-jdk \
+    gcc \
+    g++ \
+    golang \
+    nodejs \
+    npm \
+    rustc \
+    cargo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g ts-node typescript
+
 # Install dependencies first (layer caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

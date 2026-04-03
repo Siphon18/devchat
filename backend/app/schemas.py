@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
+from enum import Enum
 import re
 
 # --- Auth Schemas ---
@@ -89,11 +90,22 @@ class RoomResponse(BaseModel):
         from_attributes = True
 
 
+class CodeLanguage(str, Enum):
+    python = "python"
+    javascript = "javascript"
+    typescript = "typescript"
+    java = "java"
+    c = "c"
+    cpp = "cpp"
+    go = "go"
+    rust = "rust"
+
+
 class MessageCreate(BaseModel):
     room_id: int
     sender: str
     type: str  # "text" or "code"
-    language: Optional[str] = None
+    language: Optional[CodeLanguage] = None
     content: str
     stdin: Optional[str] = None  # pre-filled stdin for input() calls
     reply_to_id: Optional[int] = None
