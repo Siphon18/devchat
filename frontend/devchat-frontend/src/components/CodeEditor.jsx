@@ -2,13 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { sendTypingEvent } from "../services/websocket";
 import { uploadAttachment } from "../services/api";
+import { DEFAULT_LANGUAGE, getLanguageMeta, LANGUAGES, STARTER_CODE } from "../config/languages";
 import { useToast } from "./Toast";
-
-const LANGUAGES = [
-  { id: "python", label: "Python", icon: "Py" },
-  { id: "javascript", label: "JavaScript", icon: "Js", disabled: true },
-  { id: "bash", label: "Bash", icon: "Sh", disabled: true },
-];
 
 const ACCEPTED_FILES = [
   "image/*",
@@ -28,7 +23,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const [text, setText] = useState("");
   const [code, setCode] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
-  const [language, setLanguage] = useState("python");
+  const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -41,6 +36,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [recordError, setRecordError] = useState("");
   const [recordActionLoading, setRecordActionLoading] = useState(false);
+  const languageMeta = getLanguageMeta(language);
 
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -65,7 +61,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
       if (editingMessage.type === "code") {
         setIsExpanded(true);
         setCode(editingMessage.content);
-        setLanguage(editingMessage.language || "python");
+        setLanguage(editingMessage.language || DEFAULT_LANGUAGE);
       } else {
         setIsExpanded(false);
         setText(editingMessage.content);
@@ -92,7 +88,22 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
 
   const toggleEditor = () => {
     setIsExpanded((v) => !v);
-    if (!isExpanded) setText("");
+    if (!isExpanded) {
+      setText("");
+      if (!code.trim()) {
+        setCode(STARTER_CODE[language] || STARTER_CODE[DEFAULT_LANGUAGE]);
+      }
+    }
+  };
+
+  const handleLanguageChange = (nextLanguage) => {
+    setLanguage((previousLanguage) => {
+      const previousStarter = STARTER_CODE[previousLanguage];
+      if (!code.trim() || code === previousStarter) {
+        setCode(STARTER_CODE[nextLanguage] || "");
+      }
+      return nextLanguage;
+    });
   };
 
   const triggerSend = async (type, content, lang = null, files = [], stdinText = "") => {
@@ -506,8 +517,8 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
       } ${sending ? "ring-1 ring-accent-purple/35" : ""}`}>
 
         {(editingMessage || replyingMessage) && (
-          <div className="bg-dc-panel/80 rounded-t-2xl border-b border-white/[0.08] flex items-center justify-between px-4 py-2.5">
-            <div className="flex items-center gap-2 overflow-hidden text-xs">
+          <div className="bg-dc-panel/80 rounded-t-2xl border-b border-white/[0.08] flex items-center justify-between gap-2 px-4 py-2.5">
+            <div className="flex items-center gap-2 overflow-hidden text-xs min-w-0">
               {editingMessage ? (
                 <>
                   <EditIcon className="w-3.5 h-3.5 text-accent-purple" />
@@ -528,24 +539,31 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
         )}
 
         {isExpanded && (
-          <div className="animate-fade-in-down">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.05] bg-dc-panel/50">
-              <div className="flex items-center gap-1">
+          <div className="animate-fade-in-down code-editor-shell">
+            <div className="code-editor-toolbar">
+              <div className="code-editor-language-row">
+                <div className="code-editor-language-pills">
                 {LANGUAGES.map((l) => (
                   <button
-                    key={l.id}
-                    disabled={l.disabled}
-                    onClick={() => !l.disabled && setLanguage(l.id)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${language === l.id
-                      ? "bg-accent-purple/20 text-accent-purple border border-accent-purple/30"
-                      : l.disabled
-                        ? "text-text-muted opacity-40 cursor-not-allowed"
-                        : "text-text-secondary hover:text-white hover:bg-dc-hover"
-                    }`}
+                    key={l.value}
+                    onClick={() => handleLanguageChange(l.value)}
+                    className={`code-language-pill ${language === l.value ? "active" : ""}`}
+                    title={l.label}
                   >
                     {l.icon}
                   </button>
                 ))}
+                </div>
+                <div className="code-editor-meta">
+                  <span className="lang-badge">
+                    <span>{languageMeta.icon}</span>
+                    <span>{languageMeta.label}</span>
+                  </span>
+                  <span className="code-editor-linecount">
+                    {code.split("\n").length} line{code.split("\n").length !== 1 ? "s" : ""}
+                  </span>
+                  <span className="code-editor-helper">Ready to run</span>
+                </div>
               </div>
               <button onClick={toggleEditor} className="text-text-muted hover:text-white text-xs p-1 rounded-lg hover:bg-dc-hover">
                 <CloseIcon className="w-3.5 h-3.5" />
@@ -554,7 +572,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
             <div className="border-b border-white/[0.05]">
               <Editor
                 height="180px"
-                language={language}
+                language={LANGUAGES.find((item) => item.value === language)?.monacoLang || DEFAULT_LANGUAGE}
                 theme="vs-dark"
                 value={code}
                 onChange={(v) => setCode(v || "")}
@@ -568,12 +586,14 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                   renderLineHighlight: "gutter",
                   scrollbar: { verticalScrollbarSize: 4 },
                   overviewRulerLanes: 0,
+                  automaticLayout: true,
+                  wordWrap: "on",
                 }}
               />
             </div>
 
             {/* Stdin input panel */}
-            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/[0.05] bg-dc-panel/30">
+            <div className="code-editor-stdin-row flex items-center gap-2 px-3 py-1.5 border-b border-white/[0.05] bg-dc-panel/30">
               <button
                 onClick={() => setShowStdin((v) => !v)}
                 className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all ${
@@ -608,9 +628,9 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
         )}
 
         {attachments.length > 0 && (
-          <div className="px-3 pt-2 flex flex-wrap gap-2 border-b border-white/[0.04]">
+          <div className="composer-attachments px-3 pt-2 flex flex-wrap gap-2 border-b border-white/[0.04]">
             {attachments.map((att, idx) => (
-              <div key={`${att.url}-${idx}`} className="flex items-center gap-2 bg-white/[0.06] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs max-w-[280px]">
+              <div key={`${att.url}-${idx}`} className="composer-attachment-chip flex items-center gap-2 bg-white/[0.06] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs max-w-full sm:max-w-[280px]">
                 <AttachmentMiniIcon className="w-3.5 h-3.5 text-accent-cyan flex-shrink-0" />
                 <span className="truncate text-white/90">{att.file_name}</span>
                 <button onClick={() => removeAttachment(idx)} className="text-text-muted hover:text-white" title="Remove">
@@ -636,11 +656,11 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
           </div>
         )}
 
-        <div className="flex items-center gap-2 px-3 py-2.5">
+        <div className="composer-control-row flex items-center gap-2 px-3 py-2.5">
           <button
             onClick={toggleEditor}
             title="Toggle code editor"
-            className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isExpanded
+            className={`composer-icon-btn flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isExpanded
               ? "bg-accent-purple/20 text-accent-purple border border-accent-purple/30"
               : "bg-dc-hover text-text-secondary hover:text-white hover:bg-dc-active"
             }`}
@@ -652,7 +672,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading || !!editingMessage}
             title="Attach files"
-            className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.06] text-text-secondary hover:text-accent-cyan hover:bg-accent-cyan/10 hover:border-accent-cyan/25 active:scale-95 transition-all duration-200 disabled:opacity-35"
+            className="composer-icon-btn w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.06] text-text-secondary hover:text-accent-cyan hover:bg-accent-cyan/10 hover:border-accent-cyan/25 active:scale-95 transition-all duration-200 disabled:opacity-35"
           >
             <PaperclipIcon className="w-4 h-4 mx-auto" />
           </button>
@@ -682,9 +702,13 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
               }}
             />
           ) : (
-            <div className="flex-1 flex items-center gap-2">
-              <span className="text-xs text-text-muted font-mono">
-                {language} · {code.split("\n").length} line{code.split("\n").length !== 1 ? "s" : ""}
+            <div className="flex-1 flex items-center gap-2 min-w-0">
+              <span className="text-xs text-text-muted font-mono inline-flex items-center gap-2 min-w-0 flex-wrap">
+                <span className="lang-badge">
+                  <span>{languageMeta.icon}</span>
+                  <span>{languageMeta.label}</span>
+                </span>
+                <span>{code.split("\n").length} line{code.split("\n").length !== 1 ? "s" : ""}</span>
               </span>
             </div>
           )}
@@ -694,9 +718,9 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
               <button
                 onClick={handleSendCode}
                 disabled={!code.trim() || uploading}
-                className="px-3 h-8 rounded-xl bg-accent-purple hover:bg-accent-violet text-white text-xs font-semibold transition-all disabled:opacity-35"
+                className="run-code-btn"
               >
-                {editingMessage ? "Save" : "Send"}
+                {sending ? "Running..." : editingMessage ? "Save" : "Run"}
               </button>
             ) : (
               <>
@@ -705,7 +729,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                     onClick={openRecorder}
                     disabled={uploading || recorderOpen}
                     title="Record voice note"
-                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
+                    className="composer-send-btn w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
                   >
                     <MicIcon className="w-4 h-4 mx-auto" />
                   </button>
@@ -713,7 +737,7 @@ export default function CodeEditor({ onSend, roomName, editingMessage, onCancelE
                   <button
                     onClick={handleSendText}
                     disabled={uploading || (!text.trim() && attachments.length === 0)}
-                    className="w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
+                    className="composer-send-btn w-9 h-9 rounded-full bg-gradient-to-br from-accent-purple to-accent-violet text-white shadow-lg shadow-accent-purple/30 hover:shadow-accent-purple/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-35"
                   >
                     <SendIcon className="w-4 h-4 mx-auto" />
                   </button>

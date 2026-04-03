@@ -1,5 +1,8 @@
 import { useRef, useEffect } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { getAvatarUrl } from "../utils/avatar";
+import { getLanguageMeta } from "../config/languages";
+import { fadeUp, slideDown } from "../utils/motion";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -61,6 +64,7 @@ function resolveUrl(url) {
 
 export default function MessageList({ messages, user, members = [], onlineUsers = [], onEdit, onDelete, onReply }) {
   const bottomRef = useRef(null);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -68,6 +72,7 @@ export default function MessageList({ messages, user, members = [], onlineUsers 
 
   return (
     <div className="flex flex-col gap-0.5">
+      <AnimatePresence initial={false}>
       {messages.map((msg, i) => {
         const isUser = msg.message.sender === user?.username;
         const prev = messages[i - 1];
@@ -79,6 +84,7 @@ export default function MessageList({ messages, user, members = [], onlineUsers 
             isUser={isUser}
             isGrouped={isGrouped}
             index={i}
+            reduceMotion={reduceMotion}
             currentUser={user}
             members={members}
             isOnline={onlineUsers.includes(msg.message.sender)}
@@ -88,19 +94,32 @@ export default function MessageList({ messages, user, members = [], onlineUsers 
           />
         );
       })}
+      </AnimatePresence>
       <div ref={bottomRef} />
     </div>
   );
 }
 
-function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, isOnline, onEdit, onDelete, onReply }) {
+function MessageBubble({ msg, isUser, isGrouped, index, reduceMotion, currentUser, members, isOnline, onEdit, onDelete, onReply }) {
   const avatarUrl = getMessageAvatarUrl(msg.message.sender, currentUser, members);
   const displayName = getDisplayName(msg.message.sender, currentUser, members);
+  const statusLabel = msg.execution?.status === "running"
+    ? "Running"
+    : msg.execution?.status === "success"
+      ? "Done"
+      : msg.execution?.status === "error"
+        ? "Error"
+        : null;
 
   return (
-    <div
-      className={`message-row flex gap-3 px-2 py-0.5 rounded-xl transition-colors animate-fade-in-up w-full ${isUser ? "flex-row-reverse" : "flex-row"} ${isGrouped ? "mt-0" : "mt-3"}`}
+    <motion.div
+      className={`message-row group/row flex gap-3 px-2 py-1 rounded-xl transition-colors animate-fade-in-up w-full ${isUser ? "flex-row-reverse" : "flex-row"} ${isGrouped ? "mt-0" : "mt-3"}`}
       style={{ animationDelay: `${Math.min(index * 0.03, 0.3)}s` }}
+      variants={fadeUp}
+      initial={reduceMotion || isGrouped ? false : "hidden"}
+      animate="visible"
+      exit="exit"
+      layout={!reduceMotion}
     >
       {/* Avatar — completely hidden for current user, hidden for others when grouped */}
       {!isUser && (
@@ -137,6 +156,11 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
               {formatTime(msg.message.timestamp)}
               {msg.message.is_edited && !msg.message.is_deleted && <span className="italic text-[10px] bg-white/[0.04] px-1.5 py-0.5 rounded-md">(edited)</span>}
             </span>
+            {msg.message.type === "code" && statusLabel && (
+              <span className={`exec-status compact ${msg.execution.status}`}>
+                {statusLabel}
+              </span>
+            )}
           </div>
         )}
 
@@ -144,7 +168,7 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
         {msg.message.reply_to && !msg.message.is_deleted && (
           <div className={`flex items-center gap-2 mb-1 text-xs opacity-75 max-w-[90%] ${isUser ? "justify-end mr-1" : "justify-start ml-1"}`}>
             <div className={`w-4 h-4 border-l-2 border-t-2 border-white/20 rounded-tl-lg mt-2 -ml-2 ${isUser && "scale-x-[-1]"}`} />
-            <div className="bg-white/5 rounded-md px-2 py-1 flex items-center gap-2 truncate shadow-sm">
+            <div className="reply-snippet bg-white/5 rounded-md px-2 py-1 flex items-center gap-2 truncate shadow-sm">
               <span className="font-semibold text-accent-purple shrink-0">{msg.message.reply_to.sender}</span>
               <span className="text-text-muted truncate">{msg.message.reply_to.content}</span>
             </div>
@@ -193,14 +217,14 @@ function MessageBubble({ msg, isUser, isGrouped, index, currentUser, members, is
           )}
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
 function TextMessage({ msg, isUser }) {
   const attachments = msg.message.attachments || [];
   return (
-    <div className={`w-full rounded-2xl overflow-hidden shadow-sm transition-all max-w-full ${isUser
+    <div className={`message-card w-full rounded-2xl overflow-hidden shadow-sm transition-all max-w-full ${isUser
       ? "bg-accent-purple/15 border border-accent-purple/15 rounded-tr-sm"
       : "glass-message rounded-tl-sm"}`}>
       {msg.message.content && (
@@ -215,22 +239,33 @@ function TextMessage({ msg, isUser }) {
 
 function CodeMessage({ msg, isUser }) {
   const attachments = msg.message.attachments || [];
+  const languageMeta = getLanguageMeta(msg.message.language);
   return (
-    <div className={`w-full rounded-2xl overflow-hidden border ${isUser ? "border-accent-purple/20 rounded-tr-sm" : "border-white/[0.06] rounded-tl-sm"}`}>
+    <div className={`code-message-card w-full rounded-2xl overflow-hidden border ${isUser ? "border-accent-purple/20 rounded-tr-sm" : "border-white/[0.06] rounded-tl-sm"}`}>
       {/* Code header */}
-      <div className={`flex items-center justify-between px-3 py-2 text-xs font-mono ${isUser ? "bg-accent-purple/10" : "bg-dc-panel"}`}>
-        <div className="flex items-center gap-2">
+      <div className={`code-message-header flex items-center justify-between gap-3 px-3 py-2 text-xs font-mono ${isUser ? "bg-accent-purple/10" : "bg-dc-panel"}`}>
+        <div className="flex items-center gap-2 flex-shrink-0">
           <span className="w-2.5 h-2.5 rounded-full bg-rose-500/70" />
           <span className="w-2.5 h-2.5 rounded-full bg-amber-500/70" />
           <span className="w-2.5 h-2.5 rounded-full bg-green-500/70" />
         </div>
-        <span className="text-text-muted uppercase tracking-wider text-[10px]">
-          {msg.message.language || "code"}
-        </span>
+        <div className="code-message-meta flex items-center gap-2 min-w-0">
+          <span className="lang-badge">
+            <span>{languageMeta.icon}</span>
+            <span>{languageMeta.label}</span>
+          </span>
+          {msg.execution?.status && (
+            <span className={`exec-status ${msg.execution.status}`}>
+              {msg.execution.status === "running" && "Running"}
+              {msg.execution.status === "success" && "Done"}
+              {msg.execution.status === "error" && "Error"}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Code body */}
-      <pre className="px-4 py-3 text-xs font-mono text-accent-green bg-dc-rail/80 overflow-x-auto whitespace-pre leading-relaxed">
+      <pre className="code-message-body px-4 py-3 text-xs font-mono text-accent-green bg-dc-rail/80 overflow-x-auto whitespace-pre leading-relaxed">
         {msg.message.content}
       </pre>
 
@@ -245,7 +280,7 @@ function CodeMessage({ msg, isUser }) {
 
 function AttachmentBlock({ attachments }) {
   return (
-    <div className="px-3 pb-3 space-y-2">
+    <div className="attachment-block px-3 pb-3 space-y-2">
       {attachments.map((att, idx) => {
         const url = resolveUrl(att.url);
         const isImage = att.content_type?.startsWith("image/");
@@ -253,7 +288,7 @@ function AttachmentBlock({ attachments }) {
 
         if (isImage) {
           return (
-            <a key={`${att.url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition-colors">
+            <a key={`${att.url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="attachment-image-link block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition-colors">
               <img src={url} alt={att.file_name} className="max-h-72 w-full object-cover" />
             </a>
           );
@@ -261,7 +296,7 @@ function AttachmentBlock({ attachments }) {
 
         if (isAudio) {
           return (
-            <div key={`${att.url}-${idx}`} className="rounded-xl border border-white/10 bg-black/20 p-2.5">
+            <div key={`${att.url}-${idx}`} className="attachment-audio rounded-xl border border-white/10 bg-black/20 p-2.5">
               <div className="text-[11px] text-text-muted mb-1">{att.file_name}</div>
               <audio controls className="w-full h-9">
                 <source src={url} type={att.content_type || "audio/webm"} />
@@ -276,7 +311,7 @@ function AttachmentBlock({ attachments }) {
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-black/20 p-2.5 hover:bg-black/30 transition-colors"
+            className="attachment-file flex items-center gap-2.5 rounded-xl border border-white/10 bg-black/20 p-2.5 hover:bg-black/30 transition-colors"
           >
             <FileAttachmentIcon className="w-5 h-5 text-accent-cyan flex-shrink-0" />
             <div className="min-w-0">
@@ -297,16 +332,31 @@ function ExecutionBlock({ execution }) {
 
   if (execution.status === "running") {
     return (
-      <div className="px-4 py-3 flex items-center gap-2 bg-amber-500/5 border-t border-amber-500/10">
+      <motion.div
+        className="code-output-panel running"
+        variants={slideDown}
+        initial="hidden"
+        animate="visible"
+        exit="exit"
+        layout
+      >
         <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse-slow" />
         <span className="text-xs text-amber-400 font-mono">Running...</span>
-      </div>
+        <span className="code-output-helper text-[10px] text-amber-300/70 ml-auto uppercase tracking-[0.18em]">Live</span>
+      </motion.div>
     );
   }
 
   if (execution.status === "success" && execution.stdout) {
     return (
-      <div className="px-4 py-3 border-t border-accent-green/10 bg-accent-green/5">
+      <motion.div
+        className="code-output-panel success"
+        variants={slideDown}
+        initial="hidden"
+        animate="visible"
+        exit="exit"
+        layout
+      >
         <div className="flex items-center gap-1.5 mb-1.5">
           <span className="w-2 h-2 rounded-full bg-accent-green" />
           <span className="text-[10px] text-accent-green font-semibold uppercase tracking-wider">Output</span>
@@ -315,27 +365,41 @@ function ExecutionBlock({ execution }) {
         <pre className="text-xs text-accent-green/90 font-mono whitespace-pre-wrap break-words">
           {execution.stdout}
         </pre>
-      </div>
+      </motion.div>
     );
   }
 
   if (execution.status === "success" && !execution.stdout) {
     return (
-      <div className="px-4 py-3 border-t border-accent-green/10 bg-accent-green/5">
+      <motion.div
+        className="code-output-panel success"
+        variants={slideDown}
+        initial="hidden"
+        animate="visible"
+        exit="exit"
+        layout
+      >
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-accent-green" />
           <span className="text-[10px] text-accent-green font-semibold uppercase tracking-wider">Success</span>
           {execution.runtime && <span className="text-[10px] text-accent-green/50 ml-auto font-mono">{execution.runtime}</span>}
         </div>
         <span className="text-[11px] text-accent-green/50 italic">Program finished with no output.</span>
-      </div>
+      </motion.div>
     );
   }
 
   if (execution.status === "error") {
     const errMsg = execution.stderr || "Unknown error";
     return (
-      <div className="px-4 py-3 border-t border-discord-red/10 bg-discord-red/5">
+      <motion.div
+        className="code-output-panel error"
+        variants={slideDown}
+        initial="hidden"
+        animate="visible"
+        exit="exit"
+        layout
+      >
         <div className="flex items-center gap-1.5 mb-1.5">
           <span className="w-2 h-2 rounded-full bg-discord-red" />
           <span className="text-[10px] text-discord-red font-semibold uppercase tracking-wider">Error</span>
@@ -344,7 +408,7 @@ function ExecutionBlock({ execution }) {
         <pre className="text-xs text-discord-red/90 font-mono whitespace-pre-wrap break-words">
           {errMsg}
         </pre>
-      </div>
+      </motion.div>
     );
   }
 
