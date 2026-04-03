@@ -535,6 +535,7 @@ def _oauth_upsert_user(db: Session, *, background_tasks: BackgroundTasks, provid
                        username_hint: str, avatar_url: str, email: str | None):
     """Find or create a user from OAuth, return JWT."""
     from app.nicknames import generate_nickname
+    normalized_email = email.strip().lower() if email else None
 
     # 1. Try to find by oauth_provider + oauth_id
     user = db.query(models.User).filter(
@@ -548,7 +549,6 @@ def _oauth_upsert_user(db: Session, *, background_tasks: BackgroundTasks, provid
         if avatar_url and user.avatar_url != avatar_url:
             user.avatar_url = avatar_url
             changed = True
-        normalized_email = email.strip().lower() if email else None
         if normalized_email and user.email != normalized_email:
             email_owner = db.query(models.User).filter(
                 models.User.email == normalized_email,
@@ -562,7 +562,36 @@ def _oauth_upsert_user(db: Session, *, background_tasks: BackgroundTasks, provid
         access_token = auth.create_access_token(data={"sub": user.username})
         return {"access_token": access_token, "token_type": "bearer", "is_new": False}
 
-    # 2. Create new user — ensure unique username
+    # 2. Link to an existing account with the same email when possible.
+    if normalized_email:
+        email_user = db.query(models.User).filter(models.User.email == normalized_email).first()
+        if email_user:
+            if email_user.oauth_provider and email_user.oauth_provider != provider:
+                raise HTTPException(409, "An account with this email is already linked to a different OAuth provider.")
+            if email_user.oauth_id and email_user.oauth_id != oauth_id:
+                raise HTTPException(409, "An account with this email is already linked to a different OAuth identity.")
+
+            changed = False
+            if email_user.oauth_provider != provider:
+                email_user.oauth_provider = provider
+                changed = True
+            if email_user.oauth_id != oauth_id:
+                email_user.oauth_id = oauth_id
+                changed = True
+            if avatar_url and email_user.avatar_url != avatar_url:
+                email_user.avatar_url = avatar_url
+                changed = True
+            if not email_user.nickname:
+                email_user.nickname = generate_nickname()
+                changed = True
+
+            if changed:
+                db.commit()
+
+            access_token = auth.create_access_token(data={"sub": email_user.username})
+            return {"access_token": access_token, "token_type": "bearer", "is_new": False}
+
+    # 3. Create new user — ensure unique username
     base_username = username_hint[:45] or "user"
     username = base_username
     suffix = 0
@@ -581,7 +610,11 @@ def _oauth_upsert_user(db: Session, *, background_tasks: BackgroundTasks, provid
         avatar_url=avatar_url,
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "An account with this email or OAuth identity already exists.")
     db.refresh(new_user)
     if new_user.email:
         background_tasks.add_task(send_welcome_email_safe, new_user.email, new_user.username)
