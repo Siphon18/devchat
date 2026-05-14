@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from threading import Lock
 import uuid
 import secrets
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse, urlencode
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, status, UploadFile, File, Request, BackgroundTasks
@@ -34,6 +35,12 @@ def env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_origin_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
 
 
 ENABLE_DOCS = env_bool("ENABLE_DOCS", False)
@@ -72,6 +79,7 @@ _rate_lock = Lock()
 
 # ── CORS — must be before any route definitions ──────────────────────────
 frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+extra_frontend_origins = parse_origin_list(os.getenv("FRONTEND_ORIGINS"))
 allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -79,13 +87,26 @@ allowed_origins = [
     "http://localhost:80",
     "http://127.0.0.1:8000",
 ]
+
+def add_origin(origin: str):
+    origin = origin.strip().rstrip("/")
+    if not origin:
+        return
+    allowed_origins.append(origin)
+    # Also allow the sibling scheme variant to reduce deployment friction.
+    if origin.startswith("http://"):
+        allowed_origins.append(origin.replace("http://", "https://", 1))
+    elif origin.startswith("https://"):
+        allowed_origins.append(origin.replace("https://", "http://", 1))
+
+
 if frontend_url:
-    allowed_origins.append(frontend_url)
-    # Also allow HTTPS variant
-    if frontend_url.startswith("http://"):
-        allowed_origins.append(frontend_url.replace("http://", "https://", 1))
-    elif frontend_url.startswith("https://"):
-        allowed_origins.append(frontend_url.replace("https://", "http://", 1))
+    add_origin(frontend_url)
+for origin in extra_frontend_origins:
+    add_origin(origin)
+
+# Preserve order while removing duplicates.
+allowed_origins = list(dict.fromkeys(allowed_origins))
 
 app.add_middleware(
     CORSMiddleware,
@@ -305,6 +326,38 @@ def persist_message_attachments(db: Session, message_id: int, attachments: list[
         ))
 
 
+def delete_attachment_file(url: str):
+    try:
+        file_path = (UPLOAD_DIR / Path(url).name).resolve()
+        if file_path.parent == UPLOAD_DIR and file_path.exists():
+            file_path.unlink()
+    except Exception:
+        pass
+
+
+def cleanup_attachments_for_room(db: Session, room_id: int):
+    attachments = (
+        db.query(models.MessageAttachment)
+        .join(models.Message, models.Message.id == models.MessageAttachment.message_id)
+        .filter(models.Message.room_id == room_id)
+        .all()
+    )
+    for attachment in attachments:
+        delete_attachment_file(attachment.url)
+
+
+def cleanup_attachments_for_project(db: Session, project_id: int):
+    attachments = (
+        db.query(models.MessageAttachment)
+        .join(models.Message, models.Message.id == models.MessageAttachment.message_id)
+        .join(models.Room, models.Room.id == models.Message.room_id)
+        .filter(models.Room.project_id == project_id)
+        .all()
+    )
+    for attachment in attachments:
+        delete_attachment_file(attachment.url)
+
+
 # -------- AUTH ROUTES --------
 
 @app.post("/register", response_model=schemas.UserResponse)
@@ -380,16 +433,27 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
 
-# In-memory state store for CSRF protection (use Redis in production)
-_oauth_states: dict[str, float] = {}
+
+def _create_oauth_state(provider: str) -> str:
+    """Create a signed, expiring OAuth state token."""
+    return auth.create_access_token(
+        data={
+            "purpose": "oauth_state",
+            "provider": provider,
+            "nonce": secrets.token_urlsafe(16),
+        },
+        expires_delta=timedelta(minutes=10),
+    )
 
 
-def _cleanup_expired_states():
-    """Remove OAuth states older than 10 minutes."""
-    cutoff = time.time() - 600
-    expired = [k for k, v in _oauth_states.items() if v < cutoff]
-    for k in expired:
-        _oauth_states.pop(k, None)
+def _validate_oauth_state(state: str, provider: str) -> None:
+    try:
+        payload = jwt.decode(state, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state") from exc
+
+    if payload.get("purpose") != "oauth_state" or payload.get("provider") != provider:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
 
 @app.get("/oauth/github")
@@ -397,9 +461,7 @@ def oauth_github_redirect():
     """Redirect user to GitHub OAuth authorization page."""
     if not GITHUB_CLIENT_ID:
         raise HTTPException(400, "GitHub OAuth is not configured")
-    _cleanup_expired_states()
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = time.time()
+    state = _create_oauth_state("github")
     params = urlencode({
         "client_id": GITHUB_CLIENT_ID,
         "scope": "read:user user:email",
@@ -420,9 +482,7 @@ async def oauth_github_callback(
     state = body.get("state", "").strip()
     if not code:
         raise HTTPException(400, "Missing authorization code")
-    if state not in _oauth_states:
-        raise HTTPException(400, "Invalid or expired OAuth state")
-    _oauth_states.pop(state, None)
+    _validate_oauth_state(state, "github")
 
     # Exchange code for access token
     async with httpx.AsyncClient() as client:
@@ -467,9 +527,7 @@ def oauth_google_redirect():
     """Redirect user to Google OAuth authorization page."""
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(400, "Google OAuth is not configured")
-    _cleanup_expired_states()
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = time.time()
+    state = _create_oauth_state("google")
     params = urlencode({
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": f"{frontend_url}/oauth/callback" if frontend_url else "",
@@ -493,9 +551,7 @@ async def oauth_google_callback(
     state = body.get("state", "").strip()
     if not code:
         raise HTTPException(400, "Missing authorization code")
-    if state not in _oauth_states:
-        raise HTTPException(400, "Invalid or expired OAuth state")
-    _oauth_states.pop(state, None)
+    _validate_oauth_state(state, "google")
 
     redirect_uri = f"{frontend_url}/oauth/callback" if frontend_url else ""
 
@@ -921,6 +977,8 @@ def delete_project(project_id: int, db: Session = Depends(get_db), current_user:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the project owner can delete this project")
+
+    cleanup_attachments_for_project(db, project_id)
     
     db.delete(project)
     db.commit()
@@ -935,6 +993,8 @@ def delete_room(room_id: int, db: Session = Depends(get_db), current_user: model
     project = db.query(models.Project).filter(models.Project.id == room.project_id).first()
     if not project or project.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the project owner can delete rooms")
+
+    cleanup_attachments_for_room(db, room_id)
         
     db.delete(room)
     db.commit()
@@ -1653,7 +1713,7 @@ def get_room_online_users(
 # -------------------- WEBSOCKET (with JWT auth) --------------------
 
 async def get_ws_user(token: str, db: Session) -> models.User:
-    """Validate JWT token from WebSocket query param."""
+    """Validate JWT token for WebSocket auth."""
     credentials_exception = WebSocketDisconnect(code=4001)
     try:
         payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
@@ -1670,13 +1730,19 @@ async def get_ws_user(token: str, db: Session) -> models.User:
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: int, token: str = ""):
-    # Authenticate before accepting the connection
-    if not token:
-        await websocket.close(code=4001)
-        return
+    await websocket.accept()
 
     db = SessionLocal()
     try:
+        if not token:
+            try:
+                first_event = await websocket.receive_json()
+            except Exception:
+                raise WebSocketDisconnect(code=4001)
+            if first_event.get("type") != "auth" or not isinstance(first_event.get("token"), str):
+                raise WebSocketDisconnect(code=4001)
+            token = first_event.get("token", "")
+
         current_user = await get_ws_user(token, db)
         try:
             require_room_access(db, room_id, current_user.id)

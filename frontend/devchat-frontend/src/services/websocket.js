@@ -1,4 +1,5 @@
 let socket = null;
+let authSent = false;
 
 // Get WebSocket URL from environment variable
 function getWebSocketUrl(roomId) {
@@ -6,20 +7,25 @@ function getWebSocketUrl(roomId) {
 
   // Convert HTTP(S) URL to WS(S) URL
   const wsUrl = apiUrl.replace(/^http/, 'ws');
-
-  // Append JWT token as query param for authentication
-  const token = localStorage.getItem("token") || "";
-  return `${wsUrl}/ws/${roomId}?token=${encodeURIComponent(token)}`;
+  return `${wsUrl}/ws/${roomId}`;
 }
 
 export function connectWebSocket(roomId, onMessage) {
   const wsUrl = getWebSocketUrl(roomId);
   socket = new WebSocket(wsUrl);
 
-  socket.onopen = () => console.log("WebSocket connected");
+  socket.onopen = () => {
+    const token = localStorage.getItem("token") || "";
+    if (token && !authSent) {
+      socket.send(JSON.stringify({ type: "auth", token }));
+      authSent = true;
+    }
+    console.log("WebSocket connected");
+  };
   socket.onmessage = e => onMessage(JSON.parse(e.data));
   socket.onerror = e => console.error("WebSocket error", e);
   socket.onclose = (e) => {
+    authSent = false;
     if (e.code === 4001) {
       console.error("WebSocket authentication failed. Token may be invalid or expired.");
     } else {

@@ -18,12 +18,14 @@
 3. If using the Blueprint, Render will read [render.yaml](/d:/Project/render.yaml).
 4. Set these required env vars:
    - `DATABASE_URL`
-   - `FRONTEND_URL`
+   - `FRONTEND_URL` should be your deployed frontend origin, for example `https://devchat.adityachengaria043.workers.dev`
 5. Optional env vars for OAuth:
    - `GITHUB_CLIENT_ID`
    - `GITHUB_CLIENT_SECRET`
    - `GOOGLE_CLIENT_ID`
    - `GOOGLE_CLIENT_SECRET`
+
+If you serve the frontend from more than one origin, set `FRONTEND_ORIGINS` as a comma-separated list of extra allowed origins.
 
 Use your Neon pooled connection string for `DATABASE_URL`.
 
