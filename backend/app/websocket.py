@@ -10,7 +10,7 @@ class ConnectionManager:
         self.online_users: Dict[int, Set[str]] = {}
 
     async def connect(self, room_id: int, websocket: WebSocket, username: str):
-        await websocket.accept()
+        # WebSocket should already be accepted by the endpoint before calling connect()
         if room_id not in self.active_connections:
             self.active_connections[room_id] = {}
             self.online_users[room_id] = set()
